@@ -5,6 +5,14 @@ Snapshot: **2026-10-29**, pre-disconnect checkpoint.
 Status board: <https://github.com/zinerom48-tech/ZineROM-A115F-OneUI7-port-status>  
 Branch: `main`
 
+Forks on the same account (created 2026-10-29):
+
+- Source: <https://github.com/zinerom48-tech/ZineROM-a11q>
+- Release: <https://github.com/zinerom48-tech/ZineROM-A115F-OneUI7-boot-test>
+- Firmware tool: <https://github.com/zinerom48-tech/SamFWDumper1>
+
+GitHub forks do **not** copy release assets; the 1.84 GB ZIP remains only at the upstream release URL.
+
 This file is the exact resume point. It records what is done, what is blocked, which files are partial, and the commands needed to continue without repeating the audit.
 
 ## 1. Is it safe to disconnect?

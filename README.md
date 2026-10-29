@@ -79,6 +79,16 @@ See [NEXT_DEVICE_TEST.md](NEXT_DEVICE_TEST.md) for the exact commands and the lo
 
 **2026-10-29:** all current progress is saved here. No build, flash, format, or download is running. After this commit is pushed, it is safe to disconnect. Resume from [RESUME.md](RESUME.md); do not repeat the completed audit.
 
+## Forks on zinerom48-tech
+
+All three relevant public repositories are forked to this account:
+
+- Source: <https://github.com/zinerom48-tech/ZineROM-a11q> (default branch `oneui7-a11q-boot`; parent `nova-arch008/ZineROM-a11q`)
+- Release: <https://github.com/zinerom48-tech/ZineROM-A115F-OneUI7-boot-test> (default branch `main`; parent `nova-arch008/ZineROM-A115F-OneUI7-boot-test`)
+- Firmware tool: <https://github.com/zinerom48-tech/SamFWDumper1> (default branch `0000`; parent `nova-arch008/SamFWDumper1`, itself a fork of `Xiatsuma/SamFWDumper`)
+
+**Important:** a GitHub fork does not copy release assets. The 1.84 GB ZIP is **not** in the forks; it exists only on the upstream release at the asset URL below. The fork can still be used to rebuild from source.
+
 ## Links
 
 - Source repository: <https://github.com/nova-arch008/ZineROM-a11q>
