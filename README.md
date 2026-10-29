@@ -70,9 +70,14 @@ See [NEXT_DEVICE_TEST.md](NEXT_DEVICE_TEST.md) for the exact commands and the lo
 
 ## Documents
 
-- [PORTING_STATUS.md](PORTING_STATUS.md) — milestones, confirmed facts, hypotheses, recovery prerequisites.
+- [RESUME.md](RESUME.md) — **start here after disconnecting.** Exact offsets, hashes, running-task state, and resume commands.
+- [PORTING_STATUS.md](PORTING_STATUS.md) — milestones, confirmed facts, hypotheses, recovery prerequisites, and the 2026-10-29 checkpoint.
 - [ISSUE_REGISTER.md](ISSUE_REGISTER.md) — every open/closed issue and the evidence behind it.
 - [NEXT_DEVICE_TEST.md](NEXT_DEVICE_TEST.md) — the next device-only test and log capture procedure.
+
+## Latest checkpoint
+
+**2026-10-29:** all current progress is saved here. No build, flash, format, or download is running. After this commit is pushed, it is safe to disconnect. Resume from [RESUME.md](RESUME.md); do not repeat the completed audit.
 
 ## Links
 

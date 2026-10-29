@@ -241,8 +241,125 @@ The boot-critical `enablefilecrypto` failure has no established root cause, and 
 
 Local audit files are not published because they contain machine-specific paths.
 
-## 10. Change log
+## 10. Session checkpoint — 2026-10-29 (pre-disconnect)
+
+### Exact current blocker
+
+The boot stops at vold’s AIDL `fbeEnable()`, which fails inside `fscrypt_initialize_systemwide_keys()`. The exact failing sub-step is still unknown. The four candidates are:
+
+1. `init_data_file_encryption_options()` — fstab parsing. This is the least likely: the A11 `/data` entry is structurally valid (`fileencryption=ice`, no key directory).
+2. `retrieveOrGenerateKey()` — device-key retrieval through KeyStorage/Keystore2/Keymaster. This is the leading unverified branch because Android 15 Keystore2 must bind the A11’s Keymaster 4.0 HIDL HAL.
+3. `install_storage_key()` — kernel fscrypt key installation/policy.
+4. Writing `/data` encryption options/references after key installation.
+
+No successful boot has been observed. No fix has been built or tested.
+
+### Changes made in this session
+
+- Created and published the public status repository `zinerom48-tech/ZineROM-A115F-OneUI7-port-status`; initial commit `e58626e`.
+- Updated `PORTING_STATUS.md` and `ISSUE_REGISTER.md` with the new policy, library, fstab, vold-path, and Keymaster findings.
+- Added `README.md`, `NEXT_DEVICE_TEST.md`, `RESUME.md`, and this checkpoint.
+- Closed ISSUE-014: the donor `/system/lib` contains every 32-bit dependency of `wait_for_keymaster`; all inspected dependencies are `ELF32` ARM.
+- Added ISSUE-019 (unverified 64-bit Keymaster HIDL client/Keystore2 ABI) and ISSUE-020 (unknown FBE sub-step).
+- Confirmed the Android 15 call chain: `installkey /data` → `vdc cryptfs enablefilecrypto` → vold `fbeEnable()` → `fscrypt_initialize_systemwide_keys()`.
+- Confirmed `ro.crypto.type=file` is set by `fs_mgr` from the fstab, and the A11 vendor init does not call `enablefilecrypto` directly.
+- Confirmed the A11 `/data` fstab uses `fileencryption=ice` with no `keydirectory=`; `/keydata` and `/keyrefuge` use `fileencryption=ice,nofail`.
+- Confirmed donor Keystore2 contains Keymaster 4.0 support (`KEY_MASTER_V4_0`, `IKeymasterDevice`, `km_compat`) and that the donor platform policy includes `keystore` in `hal_keymaster_client` and `hal_keymint_client`.
+- Corrected the earlier `/system/lib64` result: the empty listing was caused by `ERROR: read beyond end of image`, not by a missing 64-bit Keymaster library.
+- Extended the donor system image to `system_big5.dat` (`1,324,875,776` bytes). The `/system/lib64` inode (2690) has its extent leaf at physical block `393,336` (byte offset `1,611,104,256`), so the listing still needs more decompressed data.
+- Saved a partial next range at `system_next5.br` (`12,731,492` bytes) after the download reset. No complete `/system/lib64` listing exists yet.
+- No ROM build, no new ZIP, no flash, no format, and no destructive `/data` operation was performed.
+
+### Build results
+
+- **No build was run in this session.**
+- The existing public artifact remains `ZineROM_OneUI7_A115F-Port-A057F.zip`, size `1,842,649,818` bytes, SHA-256 `f51460eff376466d24c12d39902e954e6037e5de22b3a7aef68088346f26fa95`.
+- That artifact came from GitHub Actions run `#40494388352` on commit `23f8998f0200969f5748e9eb012d1dc52037a054`, passed 62 static/package tests, and was **not** boot-tested on a phone.
+- No local build has been reproduced, so the asset is still treated as a binary artifact.
+- No new ZIP was generated.
+
+### Evidence behind the `/data` encryption failure
+
+1. **Prior log:** `cryptfs enablefilecrypto` returns `Status(-8, EX_SERVICE_SPECIFIC)`; Rescue Party reason is `enablefilecrypto_failedK00R`; init reboots to Recovery at ~14.23 s.
+2. **Exact call chain:** donor init calls `installkey /data`; `vdc` maps `cryptfs enablefilecrypto` to the AIDL `fbeEnable()`; Android 15 `fbeEnable()` calls `fscrypt_initialize_systemwide_keys()`.
+3. **A11 fstab:** `/data` is `f2fs` with `fileencryption=ice`, no `keydirectory=`, `latemount`, `check`, `quota`, `checkpoint=fs`. `/keydata` and `/keyrefuge` are `ext4` with `fileencryption=ice,nofail`.
+4. **`ro.crypto.type`:** set to `file` by `fs_mgr` when the fstab reports file encryption (`fs_mgr.cpp:1092`), so `installkey` reaches `vdc`.
+5. **32-bit helper:** `wait_for_keymaster` is `ELF32` ARM; the donor `/system/lib` contains all its 32-bit dependencies, all `ELF32` ARM; `libc.so`, `libm.so`, and `libdl.so` are runtime-APEX symlinks.
+6. **Keystore2/Keymaster:** donor Keystore2 contains KM4 support, so the HAL is not architecturally excluded. The **64-bit** Keymaster HIDL client (`android.hardware.keymaster@4.0.so`, `libkeymaster4support.so`) is still unverified because `/system/lib64` has not been listed.
+7. **Samsung ODE:** `/keydata` and `/keyrefuge` are mounted with file encryption; the A11 vendor contains `libcryptfshw*`, VaultKeeper, DRK, and secure-storage HALs. Android 15 vold compatibility is unproven.
+8. **Non-causes:** `K00R` appears on booted Samsung devices; QSEE `0x72000206` appears on a booting LineageOS daisy device; the `/oem` zero-superblock mount is a stock A11 init action and boot continues past it.
+
+### Required next commands
+
+**Device test (only with a verified stock restore path and explicit approval):**
+
+```sh
+adb devices
+adb shell getprop > getprop.txt
+adb shell dmesg > dmesg.txt
+adb logcat -b all -v threadtime -d > logcat-all.txt
+adb pull /sys/fs/pstore pstore
+adb pull /cache/recovery/last_log last_log.txt
+adb pull /cache/recovery/last_install last_install.txt
+```
+
+Then grep the full logs for:
+
+```text
+A115F_KEYMASTER_BARRIER_BEGIN
+Waiting for Keymaster device
+Keymaster device ready
+A115F_KEYMASTER_BARRIER_COMPLETE
+fscrypt_initialize_systemwide_keys
+No mount point entry for /data
+Unable to parse encryption options
+EncryptionOptions not initialized
+Failed to get ephemeral wrapped key
+decryptWithKeystoreKey failed
+decryptWithoutKeystore failed
+encryptWithKeystoreKey failed
+Version mismatch
+```
+
+**Offline resume — complete the `/system/lib64` audit:**
+
+```bat
+curl.exe -L --fail --retry 5 -r 830236850-997505357 -o system_next5b.br https://github.com/nova-arch008/ZineROM-A115F-OneUI7-boot-test/releases/download/a115f-boot-test/ZineROM_OneUI7_A115F-Port-A057F.zip
+copy /b system_big5.br+system_next5.br+system_next5b.br system_big6.br
+brotli\brotli.exe -d -c system_big6.br > system_big6.dat 2> brotli_big6_err.txt
+AuditTool.exe ext4ls system_big6.dat /system/lib64 1 > system_lib64_big6.txt
+cscript //nologo searchfile.vbs system_lib64_big6.txt keymaster
+cscript //nologo searchfile.vbs system_lib64_big6.txt keymint
+```
+
+If the partial range is corrupt, re-download the full range `817505358-997505357` to `system_next5.br` and repeat. The exact offsets and hashes are in `RESUME.md`.
+
+**Offline resume — product properties (not yet complete):**
+
+`product_full.dat` is only `83,886,080` bytes; the product partition is `312,815,616` bytes, so `/product/etc/build.prop` is still outside the decompressed prefix. Extend the product image before running:
+
+```bat
+AuditTool.exe ext4cat product_full.dat /etc/build.prop product_build.prop.txt
+```
+
+### Tasks still running / disconnect safety
+
+- No build, flash, format, or download is running. The only Git activity is this checkpoint commit/push. The last range download was reset; its partial file is saved.
+- It is safe to disconnect **after this checkpoint is committed and pushed**. The public repo is the saved state.
+- Do not delete `system_big5.dat`, `system_big5.br`, or `system_next5.br`; they are the resume point.
+
+### Resume state
+
+- Status repo: `https://github.com/zinerom48-tech/ZineROM-A115F-OneUI7-port-status`, branch `main`.
+- Quick-resume file: `RESUME.md` in that repo.
+- Current local image prefix: `system_big5.dat`, `1,324,875,776` bytes.
+- Current compressed prefix: `system_big5.br`, `656,441,987` bytes, SHA-256 `ff872e36e4c8902f88ac855e3a682e2fae36387501ba16d842d6e7f05b4cda5e`.
+- Partial next range: `system_next5.br`, `12,731,492` bytes, SHA-256 `2e9e05e9450e2bedb838e9ac609b5618b3b19d7afae3926a6423122195ebd223`; starts at ZIP absolute offset `817,505,358` (compressed-relative `656,441,987`); resume at absolute `830,236,850`.
+- `/system/lib64` inode `2690`; extent leaf physical block `393,336`; byte offset `1,611,104,256`.
+
+## 11. Change log
 
 - 2026-10-28: Initial status created from repository, release metadata, and static package metadata. No build or device test performed.
 - 2026-10-28: Corrected the source-access claim (repo is public), added the current release asset hash and the stale `BOOT_PROGRESS.md` hash discrepancy, confirmed the donor’s 32-bit support and the helper’s ELF32 dependencies, recorded the FBE v1/v2 decision path, demoted `K00R` and QSEE `0x72000206`, and identified the stock `/oem` mount and Samsung ODE partitions as separate open items. No build or device test performed.
 - 2026-10-29: Closed the 32-bit helper-dependency question after listing the donor `/system/lib`; confirmed the `vdc` → `fbeEnable()` → `fscrypt_initialize_systemwide_keys()` call chain; confirmed `ro.crypto.type=file` comes from the fstab; recorded the A11 `fileencryption=ice` layout; confirmed donor Keystore2 KM4 support and the platform policy `keystore` membership; corrected the `/system/lib64` result as a truncated-image artifact; added the four FBE sub-step hypotheses and the 64-bit Keymaster/HAL verification branch. Still R0; no build or device test performed.
+- 2026-10-29: Added the pre-disconnect checkpoint with the exact blocker, all session changes, build results, `/data` FBE evidence, resume offsets/hashes, and next commands; published the status repo. Still R0; no build or device test performed.
