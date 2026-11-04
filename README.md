@@ -11,13 +11,13 @@ Maintained for **zinerom48-tech** so the latest evidence and next actions are av
 - **Do not install the test ZIP** unless you have a verified stock `A115FXXS6CWK2` restore path and have explicitly approved the risk.
 - Do **not** format `/data`, `/keydata`, or `/keyrefuge` to “fix” the boot loop. That destroys data and does not prove the cause.
 
-## Progress right now (2026-10-29)
+## Progress right now (2026-11-03)
 
 | Measure | Estimate | Meaning |
 |---|---|---|
 | Successful boot | **0%** | No completed boot, no boot animation, no Setup Wizard. |
 | Boot stages reached | **~45%** | Bootloader → kernel → first-stage init → second-stage init → vendor services/HALs. It fails at `/data` file-based encryption before zygote and `system_server`. |
-| Offline root-cause isolation | **~65%** | Failure narrowed to vold `fbeEnable()` → `fscrypt_initialize_systemwide_keys()`. The exact failing sub-step is still unknown. |
+| Offline root-cause isolation | **~80%** | Failure narrowed to vold `fbeEnable()` → `fscrypt_initialize_systemwide_keys()`. The exact failing sub-step is still unknown; the barrier build has not been device-tested. |
 | Validated fix | **0%** | No fix has been built, flashed, or tested. |
 | Device validation | **0%** | No physical A11 available. |
 
@@ -37,7 +37,9 @@ These are bookkeeping estimates, **not** a probability that the ROM will boot. T
 - The failing operation is vold’s `fbeEnable()`, which calls `fscrypt_initialize_systemwide_keys()`. The failure is inside that function, not a missing `vdc` command.
 - The A11 `/data` fstab uses `fileencryption=ice` with no key directory, consistent with the A11’s FBE v1 + inline-crypto layout.
 - The donor `/system/lib` contains every 32-bit dependency of `wait_for_keymaster`; all are `ELF32` ARM. The old “32-bit library missing” concern is closed.
-- Donor Keystore2 contains Keymaster 4.0 support, but the **64-bit** Keymaster HIDL client has not been verified yet. The earlier “no Keymaster library” result was a truncated-image artifact, not evidence of absence.
+- Donor Keystore2 contains Keymaster 4.0 support. The 64-bit HIDL compat stack is present (`libkm_compat.so`, `libkm_compat_service.so`, `libkeymint_support.so`), and `hwservicemanager` is present. The remaining question is runtime KM4 registration/TA compatibility, not missing libraries.
+- The effective FBE policy is **v1**: A11 vendor `ro.product.first_api_level=29`; donor system, system_ext, and product build.prop files do not override it.
+- The Keymaster barrier is correctly placed, but the A11 Android 12 helper waits for Keystore2 registration, not KM4; `A115F_KEYMASTER_BARRIER_COMPLETE` is not proof that KM4 is ready.
 
 ## What is still unknown
 
@@ -46,9 +48,9 @@ These are bookkeeping estimates, **not** a probability that the ROM will boot. T
    - device-key retrieval through KeyStorage/Keystore2/Keymaster,
    - kernel fscrypt key installation,
    - or writing the `/data` encryption options/references.
-2. Whether the A11’s Keymaster 4.0 **HIDL** HAL can be bound by Android 15 Keystore2 at runtime.
+2. Whether the A11’s Keymaster 4.0 **HIDL** HAL registers and can be bound by Android 15 Keystore2 at runtime.
 3. Whether the A11’s Samsung ODE `/keydata`/`/keyrefuge` state is compatible with Android 15 vold.
-4. Whether the effective FBE policy is v1 (likely) or v2 (product/system_ext properties still unread).
+4. Whether the prior failure log came from a pre-barrier build (leading hypothesis) and whether the current barrier build behaves differently.
 5. Whether `/data` was left in a partially encrypted/corrupt state by earlier attempts.
 
 ## What I need from you (device side)
@@ -70,14 +72,14 @@ See [NEXT_DEVICE_TEST.md](NEXT_DEVICE_TEST.md) for the exact commands and the lo
 
 ## Documents
 
-- [RESUME.md](RESUME.md) — **start here after disconnecting.** Exact offsets, hashes, running-task state, and resume commands.
-- [PORTING_STATUS.md](PORTING_STATUS.md) — milestones, confirmed facts, hypotheses, recovery prerequisites, and the 2026-10-29 checkpoint.
+- [RESUME.md](RESUME.md) — **start here after disconnecting.** Current blocker, audit state, and resume commands.
+- [PORTING_STATUS.md](PORTING_STATUS.md) — milestones, confirmed facts, hypotheses, recovery prerequisites, and the 2026-11-03 checkpoint.
 - [ISSUE_REGISTER.md](ISSUE_REGISTER.md) — every open/closed issue and the evidence behind it.
 - [NEXT_DEVICE_TEST.md](NEXT_DEVICE_TEST.md) — the next device-only test and log capture procedure.
 
 ## Latest checkpoint
 
-**2026-10-29:** all current progress is saved here. No build, flash, format, or download is running. After this commit is pushed, it is safe to disconnect. Resume from [RESUME.md](RESUME.md); do not repeat the completed audit.
+**2026-11-03:** the init import-order/deadlock theory was retracted; the barrier is correctly placed and is present in the current `f51460ef…` asset. The prior failure log most likely predates the barrier. The barrier waits for Keystore2, not KM4, so the next device log must capture Keystore2/KM4 discovery as well as the barrier markers. No build, flash, or format is running. Resume from [RESUME.md](RESUME.md).
 
 ## Forks on zinerom48-tech
 

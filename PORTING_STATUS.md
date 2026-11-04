@@ -1,6 +1,6 @@
 # ZineROM One UI 7 — Galaxy A11 (SM-A115F) Port Status
 
-Last updated: 2026-10-29
+Last updated: 2026-11-03
 
 Status board: <https://github.com/zinerom48-tech/ZineROM-A115F-OneUI7-port-status>
 
@@ -134,23 +134,29 @@ The current evidence does **not** distinguish these four. A raw log containing t
 
 ### FBE version assessment
 
-The effective `ro.product.first_api_level` is likely `29`:
+**Confirmed: the effective `ro.product.first_api_level` is `29` and the port uses FBE policy v1.**
 
-- A11 vendor: `29`.
-- Donor system: value absent.
-- Product and system_ext build.prop files: not yet fully read because their image data is outside the decompressed window.
+- A11 vendor build.prop: `ro.product.first_api_level=29`.
+- Donor `/system/build.prop`: key absent.
+- Donor `/system/system_ext/etc/build.prop`: key absent.
+- Donor `/product/etc/build.prop`: key absent.
+- The donor `/system/lib64/libfscrypt.so` reads `ro.product.first_api_level` and selects the legacy v1 policy unless the value is greater than `29`. No assembled property overrides the A11 vendor value.
 
-If the effective value is `29`, Android 15 `libfscrypt` selects FBE policy v1, matching the A11’s Android 12-era kernel expectations. If product or system_ext explicitly sets a value greater than `29`, the port would select v2 and the A11 4.9 kernel’s v2 support would become a serious risk. This is a concrete, testable branch, not a conclusion.
+The earlier v2/kernel-support branch is closed. The A11 kernel is Linux/arm64 `4.9.227` with `CONFIG_FS_ENCRYPTION=y`, `CONFIG_EXT4_FS_ENCRYPTION=y`, `CONFIG_EXT4_FS_ICE_ENCRYPTION=y`, `CONFIG_F2FS_FS_ENCRYPTION=y`, `CONFIG_CRYPTO_XTS=y`, `CONFIG_CRYPTO_AES=y`, and `CONFIG_PFK=y`. The v1 policy matches the A11 Android 12-era expectations.
 
 ### Keymaster / 32-bit / 64-bit assessment
 
-The earlier concern that the donor system might be 64-bit-only is resolved: the donor declares 32-bit ABI support, ships 32-bit binaries, and its `/system/lib` contains every 32-bit dependency of `wait_for_keymaster`. The A11 Keymaster HAL and the helper are both `ELF32` ARM.
+The 32-bit and 64-bit library questions are narrowed substantially:
 
-The remaining Keymaster risks are:
+- The donor declares 32-bit ABI support, ships 32-bit binaries, and `/system/lib` contains every 32-bit dependency of `wait_for_keymaster`. The A11 Keymaster HAL and the helper are both `ELF32` ARM.
+- The 64-bit Keymaster HIDL client is present: `/system/lib64/libkm_compat.so` (227,632 bytes), `libkm_compat_service.so` (27,392), `libkeymint_support.so` (125,032), and the KeyMint V1/V2/V3 libraries. `libkm_compat.so` contains HIDL `IKeymasterDevice::getService` symbols and the Keymaster 3.x/4.x fallback.
+- `hwservicemanager` is present at `/system/system_ext/bin/hwservicemanager`; `/system_ext` is a symlink to `/system/system_ext`. `libkm_compat` skips HIDL fallback only when the HIDL service manager itself is unavailable, so the A11 KM4 service is reachable in principle.
 
-- whether the donor’s **64-bit** `/system/lib64` contains the Keymaster 4.0 HIDL client used by Keystore2 (`android.hardware.keymaster@4.0.so`, `libkeymaster4support.so`) and whether Keystore2’s dependencies resolve;
-- whether Android 15 Keystore2 can discover and bind the A11’s Keymaster **4.0 HIDL** service under the donor SELinux policy;
-- whether the A11 Keymaster TA/QSEE path can generate the key type/capability requested by Android 15 FBE;
+The remaining Keymaster risks are runtime, not library presence:
+
+- whether KM4 is registered and usable when Keystore2/fscrypt asks for it (see the barrier limitation in the 2026-11-03 checkpoint);
+- whether the A11 KM4 HAL starts successfully alongside `qseecom-service` and the A11 TA;
+- whether the A11 KM4 TA can generate the key type/capability requested by Android 15 FBE;
 - whether the A11’s Samsung ODE `/keydata`/`/keyrefuge` state is compatible with Android 15 vold.
 
 ### Hypotheses (not confirmed)
@@ -160,12 +166,13 @@ The remaining Keymaster risks are:
 - **H3 — Samsung ODE/keydata mismatch:** Android 15 vold’s handling of `/keydata`/`/keyrefuge` or Samsung VaultKeeper/DRK differs from the A11 Android 12 format, so the FBE key cannot be unwrapped.
 - **H4 — `/data` state:** a previous failed attempt left `/data` or its metadata partially encrypted/corrupt, so `enablefilecrypto` fails before Keymaster is reached. This must not be tested by formatting without explicit approval.
 - **H5 — Kernel feature gap:** the A11 4.9 kernel lacks a crypto/inline-encryption feature required by the donor’s FBE path. This is less likely if policy v1 is selected, but not ruled out.
-- **H6 — Barrier not exercised in the prior log:** the prior build may not have contained the barrier, or the helper produced no kernel messages because it never started. The current `f51460ef…` package contains the barrier and is the correct artifact for the next device test.
-- **H7 — Keystore2/HAL ABI gap:** Keystore2’s 64-bit Keymaster HIDL client is missing, cannot resolve its dependencies, or cannot bind the A11 KM4 service. This is now the main unverified Keymaster branch.
+- **H6 — Prior log predates the barrier:** confirmed as the leading explanation. The prior diagnostic ZIP `1103fc00…` predates commit `190586c` (barrier) and `23f8998f…` (markers); the current `f51460ef…` asset was built from `23f8998f…` and contains the barrier. No barrier-containing build is known to have been device-tested.
+- **H7 — Keystore2/KM4 runtime binding gap:** the 64-bit HIDL client is present, but KM4 may not be registered or usable when Keystore2/fscrypt needs it. This is the main remaining Keymaster branch.
 
 ## 5. Untested assumptions
 
-- That the effective `ro.product.first_api_level` is `29` on the assembled system (product/system_ext not fully read).
+- That the barrier’s `wait_for_keymaster` exit actually implies KM4 is usable. It does not: the helper waits for Keystore2 registration and logs `getSecurityLevel` failures without returning nonzero.
+- That KM4 registers before Keystore2’s shared-secret negotiation and before vold’s FBE key generation.
 - That the helper can execute under the donor SELinux policy and reach Keystore2.
 - That the prior log belongs to the current `f51460ef…` asset (it does not; no SHA linkage exists).
 - That the A11 kernel supports the FBE policy version actually selected and the inline-encryption path used by `/data`.
@@ -174,7 +181,7 @@ The remaining Keymaster risks are:
 - That the dynamic-partition geometry is valid for the user’s exact A115F variant/CSC.
 - That a stock `A115FXXS6CWK2` package for the user’s exact CSC can be obtained and flashed successfully.
 - That the device’s bootloader is unlocked and AVB/verification is disabled enough to boot the modified `boot`/`dtbo`.
-- That Keystore2’s 64-bit Keymaster HIDL client and the A11 KM4 HAL are runtime-compatible.
+- That Keystore2’s HIDL KM4 fallback and the A11 KM4 HAL are runtime-compatible.
 
 ## 6. Device-only tests (cannot be completed offline)
 
@@ -206,16 +213,15 @@ Without items 1–6, installation must not be recommended, regardless of ZIP ava
 
 ### Highest-priority blocker
 
-The boot-critical `enablefilecrypto` failure has no established root cause, and the current evidence cannot distinguish the four sub-steps of `fscrypt_initialize_systemwide_keys()`. The `f51460ef…` package contains the barrier but has not been device-tested.
+The only raw `enablefilecrypto` failure log predates the Keymaster barrier. The current `f51460ef…` package contains the barrier and markers but has not been device-tested. The barrier is correctly placed, but it waits for Keystore2 registration, not for KM4; therefore barrier completion alone cannot prove that the FBE key path is healthy.
 
 ### Next concrete actions
 
-1. Obtain the raw failed-boot log and the exact tested ZIP SHA from the user/tester; correlate `enablefilecrypto`, vold, keystore2, Keymaster, and QSEE timestamps.
-2. Require the next device test to use `f51460ef…` and capture the barrier plus vold/keystore2/keymaster/QSEE logs.
-3. Use the log to identify the failing sub-step before changing fstab, FBE policy, or adding another Keymaster bridge.
-4. Finish the 64-bit `/system/lib64` audit: verify `android.hardware.keymaster@4.0.so`, `libkeymaster4support.so`, and Keystore2’s `DT_NEEDED` entries. The current decompressed prefix ends before the directory data; this is a pending offline check, not a confirmed absence.
-5. Finish the product build.prop audit only if cheap; do not block on it.
-6. Keep readiness at R0; do not build or publish another ZIP until the root cause or a decisive device-log branch is established.
+1. Device-test the exact `f51460ef…` asset with a verified stock restore path and explicit approval; capture the barrier, Keystore2, KM4, QSEECom, and FBE lines.
+2. Use the branch tree in `NEXT_DEVICE_TEST.md` to decide whether the failure is before the barrier, inside Keystore2/KM4 discovery, or inside KeyStorage/kernel FBE.
+3. Do not move the barrier into vendor `on post-fs-data`: system `installkey /data` would run before it. Do not add another Keymaster bridge before the log identifies the branch.
+4. Finish the static Samsung ODE/UCM audit (`/efs/sec_efs/ucm_ode_mode`, `/data/sec_backup_v2`, `/keydata`, `/keyrefuge`); `vndservicemanager` is now confirmed present in the A11 vendor, so that branch is closed.
+5. Keep readiness at R0; do not build or publish another ZIP until the root cause or a decisive device-log branch is established.
 
 ### What requires the user / physical device
 
@@ -241,7 +247,9 @@ The boot-critical `enablefilecrypto` failure has no established root cause, and 
 
 Local audit files are not published because they contain machine-specific paths.
 
-## 10. Session checkpoint — 2026-10-29 (pre-disconnect)
+## 10. Session checkpoint — 2026-10-29 (historical pre-disconnect)
+
+> **Historical note (2026-11-03):** this section records the state on 2026-10-29. The `/system/lib64` and product build.prop audits mentioned below are now complete (`system_full.dat` and `product_final.dat` are fully reconstructed), and the 2026-11-03 checkpoint supersedes the resume commands. Keep this section only as a record of what was known at that time.
 
 ### Exact current blocker
 
@@ -357,9 +365,63 @@ AuditTool.exe ext4cat product_full.dat /etc/build.prop product_build.prop.txt
 - Partial next range: `system_next5.br`, `12,731,492` bytes, SHA-256 `2e9e05e9450e2bedb838e9ac609b5618b3b19d7afae3926a6423122195ebd223`; starts at ZIP absolute offset `817,505,358` (compressed-relative `656,441,987`); resume at absolute `830,236,850`.
 - `/system/lib64` inode `2690`; extent leaf physical block `393,336`; byte offset `1,611,104,256`.
 
-## 11. Change log
+## 11. Session checkpoint — 2026-11-03 (barrier/build-timeline correction)
+
+### Correction: the barrier-deadlock theory is retracted
+
+The earlier concern that the vendor `on late-fs` barrier might run before the system `on late-fs` `class_start early_hal` is disproven. AOSP `ImportParser::EndFile()` parses imports at the end of the parent file, so system `init.rc` actions are queued before imported vendor actions. The actual order is:
+
+1. system `on late-fs`: `class_start early_hal`
+2. vendor `on late-fs`: `A115F_KEYMASTER_BARRIER_BEGIN`
+3. vendor `on late-fs`: `exec_start wait_for_keymaster`
+4. vendor `on late-fs`: `A115F_KEYMASTER_BARRIER_COMPLETE`
+5. vendor `on late-fs`: `mount_all /vendor/etc/fstab.qcom --late`
+
+This matches Android metadata-encryption guidance. Moving the barrier to vendor `on post-fs-data` would be wrong because system `installkey /data` executes before that trigger.
+
+### Build timeline
+
+| Build / commit | Date | Barrier? | Evidence |
+|---|---|---|---|
+| `1103fc00b36b7aa427a7bec4dd43db8aad92f2254f6022253d09704f23667c3b` — prior diagnostic ZIP | before 2026-10-25 | No | `BOOT_PROGRESS.md` states the previous diagnostic ZIP omitted the barrier |
+| `190586c39cd86057887d7ae84a4631761ace7c54` | 2026-10-25 | Yes | Commit message: `fix(a115f): gate late data mount on keymaster readiness` |
+| `23f8998f0200969f5748e9eb012d1dc52037a054` | 2026-10-27 | Yes + markers | Commit message: `diag(a115f): log keymaster readiness barrier` |
+| `f51460ef…` — current public asset | built from `23f8998f…` | Yes + markers | Released vendor `init.target.rc` MD5 `e111ab7f49ebcc8fa70d3253ccba9bce` contains `exec_start wait_for_keymaster` before `mount_all --late` |
+
+No barrier-containing build is known to have been device-tested. The only raw `enablefilecrypto` log predates the barrier.
+
+### What the barrier proves — and does not prove
+
+- The packaged `wait_for_keymaster` is the A11 Android 12 helper (`ELF32`, SHA-256 `0e64ac8862492b8f7455a5320189c754dc8f3fef720dbf0b0f71849cb86811c9`), not a donor Android 15 binary. Its source is `system/vold/wait_for_keymaster.cpp`.
+- The helper calls `AServiceManager_waitForService("android.system.keystore2.IKeystoreService/default")`, then constructs `android::vold::Keymaster`.
+- `Keymaster::Keymaster()` calls `getSecurityLevel(TRUSTED_ENVIRONMENT)`. On failure it logs `Vold unable to get security level from keystore2.` and returns; the helper still logs `Keymaster device ready` and exits 0.
+- Therefore `A115F_KEYMASTER_BARRIER_COMPLETE` proves that Keystore2 registered. It does **not** prove that KM4 registered, that KM4 is usable, or that `getSecurityLevel(TE)` succeeded.
+- Android 15 Keystore2 calls `perform_shared_secret_negotiation()` before registering. Negotiation lists running HIDL KM4 4.1/4.0 instances and retries the listed participants; if KM4 is not registered when the list is built, the participant list can be empty and Keystore2 still registers.
+- `libkm_compat` `getDevice()` caches the TEE device only if it is found. If it is not found, a later call re-enumerates, so a late KM4 registration can still be picked up. However, the diagnostic barrier does not wait for that.
+
+### VINTF, system_ext, and service discovery
+
+- Android 15 FCM 202404 and FCM 8 contain no Keymaster/KeyMint entries; FCM 7 (Android 12) lists `android.hardware.keymaster` twice. VINTF is not rejecting the A11 KM4 HAL.
+- `/system_ext` is a symlink to `/system/system_ext`; `hwservicemanager` is present at `/system/system_ext/bin/hwservicemanager` and is started by donor `init.rc`.
+- `vndservicemanager` is not in the donor system, but the A11 vendor provides `/vendor/bin/vndservicemanager` and `/vendor/etc/init/vndservicemanager.rc` (`service vndservicemanager /vendor/bin/vndservicemanager /dev/vndbinder`, class `core`). The donor `init.rc` `start vndservicemanager` therefore resolves. This is not a service-discovery gap.
+- A11 vendor SELinux defines `hal_keymaster_qti` and `hal_keymaster_qti_exec`; the KM4 binary is labeled `hal_keymaster_qti_exec`; `/data/vendor/keymaster` is `vendor_keymaster_data_file`. Donor policy includes `keystore` in `hal_keymaster_client` and `hal_keymaster_default`/`hal_keymaster_qti` in `hal_keymaster_server`. Runtime denials remain possible but are not proven.
+
+### Leading root-cause hypothesis
+
+The `enablefilecrypto_failed` log most likely came from a build before the barrier (`1103fc00…` or earlier). The barrier was added on 2026-10-25 and packaged in the current asset, but it has not been device-tested. This is a hypothesis, not a confirmed fix. Even with the barrier, KM4 readiness is not guaranteed because the helper waits on Keystore2, not KM4.
+
+### Device-log branch tree
+
+1. **No `A115F_KEYMASTER_BARRIER_BEGIN`** — the helper service did not run. Check init service state and SELinux, not FBE.
+2. **BEGIN but no COMPLETE** — `wait_for_keymaster` hung. Check Keystore2 registration and servicemanager.
+3. **COMPLETE plus `Vold unable to get security level from keystore2`** — Keystore2 is up but KM4 is not usable. Check KM4/qseecom startup, HIDL registration, and SELinux.
+4. **COMPLETE plus `Keymaster device ready` with no security-level error, then FBE failure** — KM4 may be present but key generation/profile handling failed. Inspect vold KeyStorage and Keystore2 error codes.
+5. **COMPLETE plus FBE success** — the barrier likely fixed the original race; continue to the next boot stage.
+
+## 12. Change log
 
 - 2026-10-28: Initial status created from repository, release metadata, and static package metadata. No build or device test performed.
 - 2026-10-28: Corrected the source-access claim (repo is public), added the current release asset hash and the stale `BOOT_PROGRESS.md` hash discrepancy, confirmed the donor’s 32-bit support and the helper’s ELF32 dependencies, recorded the FBE v1/v2 decision path, demoted `K00R` and QSEE `0x72000206`, and identified the stock `/oem` mount and Samsung ODE partitions as separate open items. No build or device test performed.
 - 2026-10-29: Closed the 32-bit helper-dependency question after listing the donor `/system/lib`; confirmed the `vdc` → `fbeEnable()` → `fscrypt_initialize_systemwide_keys()` call chain; confirmed `ro.crypto.type=file` comes from the fstab; recorded the A11 `fileencryption=ice` layout; confirmed donor Keystore2 KM4 support and the platform policy `keystore` membership; corrected the `/system/lib64` result as a truncated-image artifact; added the four FBE sub-step hypotheses and the 64-bit Keymaster/HAL verification branch. Still R0; no build or device test performed.
 - 2026-10-29: Added the pre-disconnect checkpoint with the exact blocker, all session changes, build results, `/data` FBE evidence, resume offsets/hashes, and next commands; published the status repo. Still R0; no build or device test performed.
+- 2026-11-03: Retracted the init import-order/deadlock theory after reading AOSP `ImportParser::EndFile()`; confirmed the barrier is correctly placed after system `class_start early_hal` and before vendor `mount_all --late`; recorded the barrier build timeline (`1103fc00…` pre-barrier, `190586c…` barrier, `23f8998f…` markers, current `f51460ef…`); confirmed FBE v1, the 64-bit KM4 compat libraries, merged system_ext, VINTF non-blocking, and the A11 vendor `vndservicemanager`; documented that `wait_for_keymaster` gates on Keystore2 registration, not KM4, and added the decisive device-log branch tree. Still R0; no build or device test performed.
