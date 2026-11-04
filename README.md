@@ -11,7 +11,7 @@ Maintained for **zinerom48-tech** so the latest evidence and next actions are av
 - **Do not install the test ZIP** unless you have a verified stock `A115FXXS6CWK2` restore path and have explicitly approved the risk.
 - Do **not** format `/data`, `/keydata`, or `/keyrefuge` to “fix” the boot loop. That destroys data and does not prove the cause.
 
-## Progress right now (2026-11-03)
+## Progress right now (2026-11-04)
 
 | Measure | Estimate | Meaning |
 |---|---|---|
@@ -37,9 +37,12 @@ These are bookkeeping estimates, **not** a probability that the ROM will boot. T
 - The failing operation is vold’s `fbeEnable()`, which calls `fscrypt_initialize_systemwide_keys()`. The failure is inside that function, not a missing `vdc` command.
 - The A11 `/data` fstab uses `fileencryption=ice` with no key directory, consistent with the A11’s FBE v1 + inline-crypto layout.
 - The donor `/system/lib` contains every 32-bit dependency of `wait_for_keymaster`; all are `ELF32` ARM. The old “32-bit library missing” concern is closed.
-- Donor Keystore2 contains Keymaster 4.0 support. The 64-bit HIDL compat stack is present (`libkm_compat.so`, `libkm_compat_service.so`, `libkeymint_support.so`), and `hwservicemanager` is present. The remaining question is runtime KM4 registration/TA compatibility, not missing libraries.
+- Donor Keystore2 contains Keymaster 4.0 support. The complete 64-bit HIDL client stack is present (`android.hardware.keymaster@3.0/4.0/4.1`, `libkeymaster4support.so`, `libkeymaster4_1support.so`, `libhidlbase.so`, `libkm_compat.so`, `libkm_compat_service.so`, `libkeymint_support.so`), and `hwservicemanager` is present. The remaining question is runtime KM4 registration/TA compatibility, not missing libraries.
 - The effective FBE policy is **v1**: A11 vendor `ro.product.first_api_level=29`; donor system, system_ext, and product build.prop files do not override it.
 - The Keymaster barrier is correctly placed, but the A11 Android 12 helper waits for Keystore2 registration, not KM4; `A115F_KEYMASTER_BARRIER_COMPLETE` is not proof that KM4 is ready.
+- The A11 `keymaster-4-0` starts at `on init`, before `/vendor/firmware_mnt` is mounted, and is expected to abort with `QSEECom_start_app failed`. The decisive start is the system `on late-fs` `class_start early_hal`, after the `apnhlos` mount and before the imported vendor barrier.
+- Samsung ODE/UCM is **not** engaged for this failure: donor `vold` consults `isUcmOdeMode()` only for `wrappedkey_v0`, and A11 `/data` uses plain `fileencryption=ice`. `/keydata` and `/keyrefuge` remain untouched.
+- Only the `manus/a115f-vendor-fingerprint` branch at `23f8998f…` contains the barrier patcher. `manus/a115f-build-once` and `manus/a115f-bootability-preflight` do not, so a rebuild from either would silently lack the barrier.
 
 ## What is still unknown
 
@@ -48,8 +51,8 @@ These are bookkeeping estimates, **not** a probability that the ROM will boot. T
    - device-key retrieval through KeyStorage/Keystore2/Keymaster,
    - kernel fscrypt key installation,
    - or writing the `/data` encryption options/references.
-2. Whether the A11’s Keymaster 4.0 **HIDL** HAL registers and can be bound by Android 15 Keystore2 at runtime.
-3. Whether the A11’s Samsung ODE `/keydata`/`/keyrefuge` state is compatible with Android 15 vold.
+2. Whether the A11’s Keymaster 4.0 **HIDL** HAL registers after the late-fs restart and can be bound by Android 15 Keystore2 at runtime.
+3. Whether `vendor.qseecomd` reaches `vendor.sys.listeners.registered` in the same boot as the barrier.
 4. Whether the prior failure log came from a pre-barrier build (leading hypothesis) and whether the current barrier build behaves differently.
 5. Whether `/data` was left in a partially encrypted/corrupt state by earlier attempts.
 
@@ -73,13 +76,13 @@ See [NEXT_DEVICE_TEST.md](NEXT_DEVICE_TEST.md) for the exact commands and the lo
 ## Documents
 
 - [RESUME.md](RESUME.md) — **start here after disconnecting.** Current blocker, audit state, and resume commands.
-- [PORTING_STATUS.md](PORTING_STATUS.md) — milestones, confirmed facts, hypotheses, recovery prerequisites, and the 2026-11-03 checkpoint.
+- [PORTING_STATUS.md](PORTING_STATUS.md) — milestones, confirmed facts, hypotheses, recovery prerequisites, and the 2026-11-04 checkpoint.
 - [ISSUE_REGISTER.md](ISSUE_REGISTER.md) — every open/closed issue and the evidence behind it.
 - [NEXT_DEVICE_TEST.md](NEXT_DEVICE_TEST.md) — the next device-only test and log capture procedure.
 
 ## Latest checkpoint
 
-**2026-11-03:** the init import-order/deadlock theory was retracted; the barrier is correctly placed and is present in the current `f51460ef…` asset. The prior failure log most likely predates the barrier. The barrier waits for Keystore2, not KM4, so the next device log must capture Keystore2/KM4 discovery as well as the barrier markers. No build, flash, or format is running. Resume from [RESUME.md](RESUME.md).
+**2026-11-04:** the A11 Keymaster abort path and start order were decoded. The first `on init` KM4 start is expected to fail before `/vendor/firmware_mnt` is mounted; the late-fs `class_start early_hal` restart is the decisive one. The Samsung ODE/UCM branch was closed from donor vold disassembly. Only `23f8998f…` contains the barrier patcher, so `build-once` and `preflight` must not be used for a rebuild. No build, flash, or format is running. Resume from [RESUME.md](RESUME.md).
 
 ## Forks on zinerom48-tech
 
