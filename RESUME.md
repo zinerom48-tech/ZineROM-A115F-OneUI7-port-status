@@ -67,7 +67,7 @@ There is **no successful boot**, no boot animation, and no Setup Wizard. No fix 
 - The `/oem` zero-superblock mount is a stock A11 init action; boot continues past it.
 - Full donor system image reconstructed: `system_full.dat`, exactly `3,213,774,848` bytes. The earlier partial-image resume state is obsolete.
 - Full donor product stream reconstructed: `product_final.dat`, exactly `312,815,616` bytes; `/product/etc/build.prop` has no `first_api_level`, crypto, or zygote override.
-- `vndservicemanager` is not in the donor system, but the A11 vendor provides `/vendor/bin/vndservicemanager` and `/vendor/etc/init/vndservicemanager.rc`, so donor `init.rc` can start it. This branch is closed.
+- Compatibility audit (2026-11-04): kernel 4.9.227 has FS_ENCRYPTION/ICE/XTS/PFK; VINTF has no missing required framework HAL and no boot-blocking extra HAL; the boot image is stock A11; the installer does not touch `/data`; dynamic-partition geometry matches the donor images. No new blocker found.
 - Samsung ODE/UCM compatibility is **closed** for this failure: donor `vold` calls `isUcmOdeMode()` only while parsing `wrappedkey_v0`; `isUcmOdeMode()` returns true only when `/efs/sec_efs/ucm_ode_mode` parses as `2`; A11 `/data` uses plain `fileencryption=ice` with no `wrappedkey_v0`, and donor `fbeEnable()` does not consume `/keydata` or `/keyrefuge`.
 - Source-branch audit: only `manus/a115f-vendor-fingerprint` at `23f8998f…` contains `scripts/patch_a115f_init.py` and the barrier. `manus/a115f-build-once` at `ec9239a1…` and `manus/a115f-bootability-preflight` at `a61d5a41…` do not have the file, so a ZIP built from either would lack the barrier.
 
@@ -112,10 +112,11 @@ The partial clone `C:\Users\claymi5433\ZineROM-a11q-src` has a stale `tmp_pack_d
 
 ## 6. Next offline work
 
-1. **KM4 runtime branch:** offline audit is complete. The remaining questions require the device log: whether the late-fs KM4 start registers with TEE security level, whether `qseecomd` reached `vendor.sys.listeners.registered` in the same boot, and whether `getSecurityLevel(TE)` succeeded. Do not add another bridge before that log.
-2. **Source reconciliation (optional, non-boot):** diff `23f8998f…` against `build-once`/`preflight` and document how to merge `scripts/patch_a115f_init.py` deliberately. Do not build from the newer-sounding branches.
-3. **Build reproduction (optional, no ZIP):** reproduce `23f8998f…` in a clean environment and compare image hashes with `f51460ef…`. This does not require the phone and must not publish a new release.
-4. **Keep the status docs current** in `PORTING_STATUS.md` and `ISSUE_REGISTER.md`.
+1. **Compatibility audit (complete, 2026-11-04):** kernel 4.9.227 has FS_ENCRYPTION/ICE/XTS/PFK; VINTF has no missing required framework HAL and no boot-blocking extra HAL; the boot image is stock A11; the installer does not touch `/data`; dynamic-partition geometry matches the donor images. No new blocker found.
+2. **KM4 runtime branch:** offline audit is complete. The remaining questions require the device log: whether the late-fs KM4 start registers with TEE security level, whether `qseecomd` reached `vendor.sys.listeners.registered` in the same boot, and whether `getSecurityLevel(TE)` succeeded. Do not add another bridge before that log.
+3. **Source reconciliation (optional, non-boot):** diff `23f8998f…` against `build-once`/`preflight` and document how to merge `scripts/patch_a115f_init.py` deliberately. Do not build from the newer-sounding branches.
+4. **Build reproduction (optional, no ZIP):** reproduce `23f8998f…` in a clean environment and compare image hashes with `f51460ef…`. This does not require the phone and must not publish a new release.
+5. **Keep the status docs current** in `PORTING_STATUS.md` and `ISSUE_REGISTER.md`.
 
 Do not change fstab, FBE policy, or add another Keymaster bridge based only on static speculation.
 
