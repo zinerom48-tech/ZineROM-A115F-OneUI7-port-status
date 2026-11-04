@@ -131,7 +131,7 @@ On Windows, use `findstr /i /c:"..."` or open the files in a text editor.
 | Observation | Meaning | Next action |
 |---|---|---|
 | First `keymaster-4-0` start, then `QSEECom_start_app failed` before the firmware mount | Expected pre-`/vendor/firmware_mnt` abort; not the root cause by itself. | Keep reading; find the second start after `on late-fs`. |
-| No second `keymaster-4-0` start after `mount_all --early` | `class_start early_hal` did not reach KM4, or init parsing/SELinux blocked it. | Check init class/action parsing and SELinux, not FBE. |
+| No second `keymaster-4-0` start after `mount_all --early` | `class_start early_hal` did not reach KM4, or init parsing/SELinux blocked it. The rc has no `interface` declaration, so there is no lazy-start fallback. | Check init class/action parsing and SELinux, not FBE. |
 | Second start aborts again with `QSEECom_start_app failed` | `/vendor/firmware_mnt` or the TA image path is still unavailable; KM4 cannot load its TA. | Check the `apnhlos` mount and `/vendor/firmware_mnt/image/keymaster64`. |
 | No `vendor.sys.listeners.registered` | `vendor.qseecomd`/`init.qti.qseecomd.sh` gate did not complete; QSEECom listeners are not ready. | Check qseecomd and `qseecom-service`, not fstab. |
 | No `A115F_KEYMASTER_BARRIER_BEGIN` | The barrier action or helper service did not run. | Check init service state/SELinux, not FBE. |
