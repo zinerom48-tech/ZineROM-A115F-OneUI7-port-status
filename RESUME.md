@@ -16,7 +16,7 @@ GitHub forks do **not** copy release assets; the 1.84 GB ZIP remains only at the
 
 ## 1. Is it safe to disconnect?
 
-**Yes.** No build, flash, format, or device operation is running. The legacy-fscrypt source is committed and pushed (`manus/a115f-legacy-fscrypt@3aa20d4`), both binaries were compiled and host-tested locally and in CI, and the branch’s 81-test suite passes in CI, including the compile, ELF, in-ROM mod-install, and real `apply_modules.sh` driver checks. The remaining limitation is external: the build job stops before `make_rom.sh` because `.github/workflows/build.yml` installs a nonexistent versioned kernel package (`linux-modules-extra-7.0.0-1014-aws`, then `linux-modules-extra-7.0.0-1017-azure`), and the current token lacks the `workflow` scope to fix it (see §4). Do not delete the audit files listed in section 6 or the source files.
+**Yes.** No build, flash, format, or device operation is running. The legacy-fscrypt source is committed and pushed (`manus/a115f-legacy-fscrypt@3aa20d4`), both binaries were compiled and host-tested locally and in CI, and the branch’s 81-test suite passes in CI, including the compile, ELF, in-ROM mod-install, and real `apply_modules.sh` driver checks. The policy inputs were also audited statically: the donor plat policy, donor 31.0 mapping, A11 vendor policy, and donor system_ext policy grant (or do not remove) every key permission the fix needs. The remaining limitation is external: the build job stops before `make_rom.sh` because `.github/workflows/build.yml` installs a nonexistent versioned kernel package (`linux-modules-extra-7.0.0-1014-aws`, then `linux-modules-extra-7.0.0-1017-azure`), and the current token lacks the `workflow` scope to fix it (see §4). Do not delete the audit files listed in section 6 or the source files.
 
 ## 2. Exact current blocker
 
@@ -40,7 +40,7 @@ The code-level root cause is now established. It has two independent parts, and 
 
 - **Part A — `/system/bin/init` wrapper.** AOSP 12 first-stage init executes `/system/bin/init selinux_setup` as PID 1 before policy load. The wrapper creates PID 1's session keyring and the named `fscrypt` keyring, preserves `argv[0]`, skips keyring setup for the `ueventd` symlink path, and execs the donor init at `/system/bin/init.real`. Both files are labelled `init_exec` because the post-policy `second_stage` re-exec runs the wrapper again. The boot image is untouched.
 - **Part B — 64-bit `vold` `LD_PRELOAD` shim.** Calls the real `ioctl` first; only on `ENOTTY` translates ADD/REMOVE/GET_STATUS to legacy `ext4:`/`f2fs:`/`fscrypt:` logon keys with a 72-byte `fscrypt_key` payload. The shim creates the `fscrypt` keyring if it is missing (fallback).
-- SELinux already permits the intended pre-policy path: `(allow domain init (key (search)))`, `(allow domain vold (key (search)))`, `(allow init init (key (write search setattr)))`, `(allow vold init (key (write search setattr)))`, `(allow vold vold (key (write search setattr)))`, plus the versioned `kernel_31_0` rules.
+- SELinux already permits the intended pre-policy path: the donor `plat_sepolicy.cil` grants `(allow domain init (key (search)))`, `(allow domain vold (key (search)))`, `(allow init init (key (write search setattr)))`, `(allow vold init (key (write search setattr)))`, and `(allow vold vold (key (write search setattr)))`, and the A11 vendor policy adds the versioned `kernel_31_0` rules.
 - Full ABI, structs, syscall numbers, packaging, and risks: `FIX_LEGACY_FSCRYPT.md`.
 
 There is **no successful boot**, no boot animation, and no Setup Wizard. The fix has not been compiled into a ROM or device-tested. Readiness remains **R0**.
@@ -60,7 +60,7 @@ There is **no successful boot**, no boot animation, and no Setup Wizard. The fix
 - AOSP/Lineage `init.cpp` still calls `keyctl_get_keyring_ID(KEY_SPEC_SESSION_KEYRING, 1)`; `FscryptInstallKeyring()` creates the named `fscrypt` keyring.
 - Legacy key format confirmed from Android 14 source: `fscrypt_key` = 72 bytes (`mode=0`, `raw[64]`, `size=64`); names `ext4:<16 hex>`, `f2fs:<16 hex>`, `fscrypt:<16 hex>`; keyring searched in PID 1's session keyring.
 - Fscrypt ioctl structs confirmed from `include/uapi/linux/fscrypt.h`: v1 specifier `type=1`, descriptor at offset 8; ADD raw payload at offset 80; REMOVE 0x40 bytes; GET_STATUS 0x80 bytes; status `ABSENT=1`, `PRESENT=2`, `INCOMPLETELY_REMOVED=3`.
-- SELinux key rules confirmed in the A11 target `plat_sepolicy.cil` (API 31, from `system_big3.dat`) and A11 `vendor_sepolicy.cil`; no policy change is needed for the intended pre-policy path.
+- SELinux key rules confirmed in the donor platform `plat_sepolicy.cil` (One UI 7 / Android 15, extracted from `system_full.dat`; SHA-256 `febc700c…`), the donor `mapping/31.0.cil`, and A11 `vendor_sepolicy.cil` (`VE=SEPF_SM-A115F_12_0001`, SHA-256 `08e2f3a2…`); the donor `system_ext_sepolicy.cil` has no key rules. No policy change is needed for the intended pre-policy path.
 - Donor system is not 64-bit-only. `/system/lib` contains every 32-bit dependency of `wait_for_keymaster`, all `ELF32` ARM.
 - Donor `/system/lib64` contains the complete 64-bit KM4 HIDL stack plus KeyMint V1/V2/V3 libraries; donor `keystore2` is ELF64.
 - A11 `libkeymasterdeviceutils.so` `KeymasterUtils` constructor calls `QSEECom_start_app(handle, "/vendor/firmware_mnt/image", "keymaster64", 0xa000)`, retries `"keymaster"`, then aborts via `__android_log_assert(“…”, "KeymasterUtils", "QSEECom_start_app failed")`. `libQSEEComAPI.so` opens the TA image with `fopen` and has no sleep/retry.
@@ -138,8 +138,10 @@ The source workspace is `C:\Users\claymi5433\Documents\Default Project\ZineROM-a
 | `donor_vold` / `donor_init` | Donor binaries with recovered symbols/debugdata |
 | `vold_all.txt` | `vold` symbol table + PLT map (`ioctl=0x140408`, `syscall=0x1429B8`) |
 | `vold_syms.txt` | Recovered `.gnu_debugdata` symbols |
-| `plat_sepolicy.cil` | A11 target platform policy (API 31, from `system_big3.dat`); key-permission proof |
-| `vendor_sepolicy.cil` | A11 vendor policy (`VE=SEPF_SM-A115F_12_0001`); versioned key rules |
+| `plat_sepolicy.cil` | Donor platform policy (One UI 7 / Android 15, from `system_full.dat`; SHA-256 `febc700c…`); key-permission proof |
+| `vendor_sepolicy.cil` | A11 vendor policy (`VE=SEPF_SM-A115F_12_0001`; SHA-256 `08e2f3a2…`); versioned key rules |
+| `mapping/31.0.cil` | Donor versioned mapping (SHA-256 `ff34465a…`); `vold_31_0`/`init_31_0`/`kernel_31_0` |
+| `system_ext_sepolicy.cil` | Donor system_ext policy (SHA-256 `a0a7cf4e…`); no key rules |
 | `KeyUtil22.cpp` / `KeyUtilL23.cpp` | Lineage 22.2/23.1 legacy fallback reference |
 | `keyutil14.cpp` | Exact legacy key names/payload/mode |
 | `vold15src/KeyUtil.cpp` | Android 15 ioctl-only reference |
@@ -279,6 +281,7 @@ Branch tree for the current asset:
 - [x] Added the CI compile/ELF test; run `43913667988` passed 76/76 tests with no skips and produced verified clang-18 targets.
 - [x] Added the in-ROM mod-install test and the `od` fallback; run `43921516470` passed 80/80 tests with no skips.
 - [x] Added the real `apply_modules.sh` driver test; run `43925890423` passed 81/81 tests with no skips.
+- [x] Policy-input audit closed statically (ISSUE-029): donor `plat_sepolicy.cil`, donor `mapping/31.0.cil`, A11 `vendor_sepolicy.cil`, and donor `system_ext_sepolicy.cil` checked; the assembled policy is still unbuilt.
 - [ ] Fix ISSUE-028 (remove `linux-modules-extra-$(uname -r)` from the workflow); re-dispatch `build.yml` and record the build outcome.
 - [ ] Build only after CI is green, then inspect the built image before any device test.
 - [ ] If the phone is available, run the one device test in section 8 after verifying the recovery path and getting explicit approval; capture both `keymaster-4-0` starts, the vold fscrypt line, and the wrapper/shim markers.

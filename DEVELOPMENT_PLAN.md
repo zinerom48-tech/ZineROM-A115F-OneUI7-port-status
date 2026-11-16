@@ -175,6 +175,7 @@ Do not spend time on optional apps, theming, or feature parity while step 1 or 2
 | QA5 | Device log parser for `A115F_FSCRYPT_*`, `Failed to install fscrypt key`, AVC denials | **Queued** | Produce a pass/fail/branch summary. |
 | QA6 | Regression matrix for FBE fresh/existing `/data`, reboot, and recovery | **Queued** | Blocked on device for execution. |
 | QA7 | Pin or hash the `magiskboot` version used by `external/make.sh` | **Obsolete for this fix** | The legacy-fscrypt fix no longer modifies the boot image; keep the hardening note for other boot work. |
+| QA8 | Policy-input audit: donor `plat_sepolicy.cil`/`mapping/31.0.cil`, A11 `vendor_sepolicy.cil`, donor `system_ext_sepolicy.cil` | **Done (static)** | Extracted from `system_full.dat` with a read-only ext4 reader; key allows, `_31_0` mappings, and the SELinux patch's non-interference confirmed. The assembled policy remains unbuilt. See `PORTING_STATUS.md` facts 43/57 and ISSUE-029. |
 
 ### 6.3 Gate G3
 
