@@ -61,6 +61,8 @@ The original M0-M9 milestones map to the five phases:
 - Leading fix: `/system/bin/init` wrapper (pre-policy keyring creation, `argv[0]` preserved, donor init moved to `init.real`) plus a 64-bit vold `LD_PRELOAD` ioctl shim. Source compiled locally with Zig 0.17.1/clang 22.1.8, host-tested, and pushed; ROM build and device test pending. Design in `FIX_LEGACY_FSCRYPT.md`.
 - Source branch `manus/a115f-legacy-fscrypt@3aa20d4` adds 14 files and is pushed. The standalone CI workflow is local-only (`local/a115f-legacy-fscrypt-ci-workflow@5551184`) because the credential lacks `workflow` scope. Repository workflows are registered (ISSUE-027 closed); `build.yml` has been dispatched four times, and the 81-test suite passes. The build stops at `Set up build environment` because the apt list contains a nonexistent versioned kernel package and omits `bc` (ISSUE-028).
 - Local binaries: wrapper 2624-byte `ET_EXEC`, no `PT_INTERP`/`.dynamic`/`DT_NEEDED`; shim 6280-byte `ET_DYN`, 0 `DT_NEEDED`, imports only `__android_log_print`/`__errno`, exports `ioctl`; host tests pass.
+- Static SELinux closure: donor init contains `/vendor` and `/odm` precompiled-policy candidates plus `/system/bin/secilc`; no `precompiled_sepolicy` exists in donor system/product or A11 vendor, so the donor 31.0 mapping and A11 vendor key rule are inputs to the boot-time compile. The A11 ODM partition is unchecked (ISSUE-030).
+- Payload/dependency closure: Linux 4.9 `validate_user_key()` never reads `payload->mode`, so the shim's 72-byte `mode=0` payload is valid; a full audit of all 52 `build_utils.sh` dependencies leaves `bc` as the only missing package (ISSUE-028).
 - No physical A11, no raw log linked to the exact ZIP SHA, no verified stock restore package, unknown bootloader/AVB state, no local Android toolchain. These block device and build work.
 - Readiness: **R0**.
 
@@ -98,6 +100,7 @@ The original M0-M9 milestones map to the five phases:
 | P1.6 | Reconcile source branches and identify the only branch with the barrier | **Done** | `23f8998f…` is the base; `build-once` is an ancestor; `preflight` lacks the barrier. |
 | P1.7 | Maintain the runtime-unknown register | **In progress** | H5-H10 and open questions in `PORTING_STATUS.md` / `FIX_LEGACY_FSCRYPT.md`. |
 | P1.8 | Obtain exact CSC/firmware, bootloader/AVB state, verified stock restore package | **Blocked** | User input required. |
+| P1.9 | Check the retained A11 ODM for `/odm/etc/selinux/precompiled_sepolicy` | **Queued** | Donor init probes vendor and ODM precompiled policies; neither donor system/product nor A11 vendor has one, but ODM was not extracted (ISSUE-030). |
 
 ### 4.3 Gate G1
 
@@ -261,20 +264,21 @@ For every device failure:
 
 | Order | ID | Action | Owner | Status |
 |---|---|---|---|---|
-| 1 | P2.2 | Commit and push the 12-file legacy-fscrypt source without altering the donor tree | Agent | **Done** (`48438e6`) |
+| 1 | P2.2 | Commit and push the legacy-fscrypt source without altering the donor tree | Agent | **Done** (`48438e6`, 14 files) |
 | 2 | P2.3 | Compile locally, run host tests and ELF/symbol checks | Agent | **Done** |
-| 3 | P2.4a | Unblock GitHub Actions workflow registration (repository currently reports zero workflows) | User | **Blocked** (ISSUE-027) |
-| 4 | P2.4b | Dispatch `build.yml`; build candidate; record hashes; do not publish | Agent | Queued (waiting on P2.4a) |
-| 5 | P2.5 | Inspect the built system image (`init`, `init.real`, `ueventd`, `vold.rc`, shim metadata) | Agent | Queued (waiting on P2.4b) |
-| 6 | — | Update docs and issue register with build/static results | Agent | **Done** (this checkpoint) |
-| 7 | P1.8 | Obtain exact CSC/firmware, unlock/AVB state, restore package | User | Blocked |
-| 8 | P5.3 | Obtain explicit approval to install | User | Blocked |
-| 9 | P2.6 | Device boot + one SHA-linked log | User/Agent | Blocked |
-| 10 | P2.7 | Verify FBE across reboot + Setup Wizard | User/Agent | Blocked |
-| 11 | P2.8-P2.15 | Hardware bring-up in dependency order | User/Agent | Blocked |
-| 12 | P4.5 | Stability/regression soak | User/Agent | Blocked |
-| 13 | P5.5 | Publish only after approval and device evidence | User | Blocked |
-| 14 | P5.6 | Final report | Agent | Queued |
+| 3 | P2.4a | Unblock GitHub Actions workflow registration | User | **Done** (ISSUE-027 closed; four runs dispatched) |
+| 4 | P1.9 | Check the A11 ODM for `/odm/etc/selinux/precompiled_sepolicy` | Agent | Queued (ISSUE-030; target ODM not extracted) |
+| 5 | P2.4b | Dispatch `build.yml`; build candidate; record hashes; do not publish | Agent | Blocked (ISSUE-028 user edit) |
+| 6 | P2.5 | Inspect the built system image (`init`, `init.real`, `ueventd`, `vold.rc`, shim metadata) | Agent | Queued (waiting on P2.4b) |
+| 7 | — | Update docs and issue register with build/static results | Agent | **Done** (this checkpoint) |
+| 8 | P1.8 | Obtain exact CSC/firmware, unlock/AVB state, restore package | User | Blocked |
+| 9 | P5.3 | Obtain explicit approval to install | User | Blocked |
+| 10 | P2.6 | Device boot + one SHA-linked log | User/Agent | Blocked |
+| 11 | P2.7 | Verify FBE across reboot + Setup Wizard | User/Agent | Blocked |
+| 12 | P2.8-P2.15 | Hardware bring-up in dependency order | User/Agent | Blocked |
+| 13 | P4.5 | Stability/regression soak | User/Agent | Blocked |
+| 14 | P5.5 | Publish only after approval and device evidence | User | Blocked |
+| 15 | P5.6 | Final report | Agent | Queued |
 
 ---
 
@@ -322,15 +326,16 @@ For every device failure:
 
 ## 13. Immediate next actions
 
-1. **Unblock GitHub Actions workflow registration (user action).** The repository reports zero registered workflows: dispatch returns HTTP 404 and `GET /actions/workflows` returns `total_count: 0`, although `build.yml` exists on `oneui7-a11q-boot`, Actions is enabled, and the token has `repo` scope. Enable/register workflows in the GitHub UI or supply a `workflow`-scoped credential. Do not rewrite the default branch.
-2. **Dispatch `build.yml` on `manus/a115f-legacy-fscrypt`.** Watch the unit-test step, then the mod's compile/host-test/`readelf` checks; fix failures before producing a ZIP.
-3. **Build and record.** Record the ZIP, wrapper, `init.real`, and shim SHA-256; do not publish.
-4. **Inspect the built system image:** `system/bin/init` wrapper, `system/bin/init.real` donor init, `ueventd` symlink, one `setenv LD_PRELOAD`, shim label/presence.
-5. **Do not device-test** until the exact CSC/firmware, unlock/AVB state, stock restore package, and explicit approval exist; then capture one SHA-linked log and do not format `/data`.
-6. **Keep the docs current** with build results and any CI failure output.
-7. **Request from the user:** exact CSC/firmware, bootloader/AVB state, verified stock restore package, and explicit approval before any flash.
-8. **When a device is available:** capture one full SHA-linked log and triage the earliest confirmed failure.
-9. Keep readiness R0 until a device reaches the framework.
+1. **Apply the ISSUE-028 workflow edit (user action).** In `.github/workflows/build.yml`, remove `linux-modules-extra-$(uname -r)` from the apt install list and add `bc`; the 81-test suite already passes, and `bc` is the only missing `build_utils.sh` dependency. This needs a `workflow`-scoped credential or a user edit. Do not rewrite the default branch or work around the packages.
+2. **Check the A11 ODM precompiled policy (offline, independent).** The donor init probes `/odm/etc/selinux/precompiled_sepolicy`; extract the target ODM tree or inspect the built ZIP and confirm it is absent. If present, do not assume the CIL key rules apply (ISSUE-030).
+3. **Dispatch `build.yml` on `manus/a115f-legacy-fscrypt`.** Watch the unit-test step, then `make_rom.sh`; fix failures only from the new log before producing a ZIP.
+4. **Build and record.** Record the ZIP, wrapper, `init.real`, and shim SHA-256; do not publish.
+5. **Inspect the built system image:** `system/bin/init` wrapper, `system/bin/init.real` donor init, `ueventd` symlink, one `setenv LD_PRELOAD`, shim label/presence.
+6. **Do not device-test** until the exact CSC/firmware, unlock/AVB state, stock restore package, and explicit approval exist; then capture one SHA-linked log and do not format `/data`.
+7. **Keep the docs current** with build results and any CI failure output.
+8. **Request from the user:** exact CSC/firmware, bootloader/AVB state, verified stock restore package, and explicit approval before any flash.
+9. **When a device is available:** capture one full SHA-linked log and triage the earliest confirmed failure.
+10. Keep readiness R0 until a device reaches the framework.
 
 ---
 
@@ -341,3 +346,4 @@ For every device failure:
 - 2026-11-16 (local build): Compiled the wrapper and shim with Zig 0.17.1/clang 22.1.8 + lld using the project flags, no warnings. Wrapper `ET_EXEC`, 2624 bytes, entry `0x1010848`, no `PT_INTERP`/`.dynamic`, 0 `DT_NEEDED`; shim `ET_DYN`, 6280 bytes, 0 `DT_NEEDED`, imports exactly `__android_log_print __errno`, exports `ioctl`, no memory exports. Host tests initially crashed with `0xC0000005` because `a115f_keyctl_fn` used 32-bit `unsigned long` on Windows LLP64; switching to `uintptr_t` fixed the host tests and left the aarch64 binaries byte-identical. Commits `325dcd2` (12 files) and `48438e6` (ABI fix) pushed. R0; no ROM build or device test.
 - 2026-11-16 (CI blocker): `build.yml` dispatch returns HTTP 404 and the repository lists zero workflows, although the default branch `oneui7-a11q-boot` contains `build.yml`, Actions is enabled, and the token has `repo` scope. Requires user action to register workflows or a `workflow`-scoped credential (ISSUE-027). Do not rewrite the default branch. R0.
 - 2026-11-16 (FUS/workflow preflight): Verified both pinned firmware tuples are the current latest on Samsung FUS with samloader-rs 2.2.0 (`SM-A115F/MWD` = `A115FXXS6CWK2/A115FOJM6CWK1/A115FXXS6CWK1/A115FXXS6CWK2`; `SM-A057F/TUR` = `A057FXXUFDZH2/A057FOJMFDZH2/A057FXXUFDZH2/A057FXXUFDZH2`), so the build's FUS download path is not blocked by unavailable firmware. Found a second workflow apt defect: `make_rom.sh` sources `build_utils.sh`, which requires `bc` at source time, but neither the workflow list nor the Ubuntu 24.04 image manifest provides it. ISSUE-028 now requires removing `linux-modules-extra-$(uname -r)` and adding `bc` in the same edit; added failed approach 21. Updated the phase/task status to the 81-test CI checkpoint. R0; no build, flash, or `/data` operation.
+- 2026-11-16 (policy compilation, payload validation, dependency audit): Confirmed donor init contains the `/vendor` and `/odm` precompiled-policy candidates, `/system/bin/secilc`, and all four CIL paths. Recursive walks of donor `system_full.dat` and `product_final.dat` found no `precompiled_sepolicy`; donor `secilc` is 346,648 bytes (SHA-256 `9aa027d0…`), donor `product_sepolicy.cil` has no key rules, and A11 vendor has no `precompiled_sepolicy` with `plat_sepolicy_vers.txt` = `31.0`. The donor mapping and vendor key rule are therefore compiled at boot. Added the A11 ODM exception as ISSUE-030 and P1.9. Also confirmed Linux 4.9 `validate_user_key()` ignores `payload->mode`, so the shim's `mode=0` payload is valid; completed the 52-command dependency audit with `bc` as the only missing package. Updated the baseline, queue, and next actions; fixed the stale workflow-registration item. R0; no build, flash, or `/data` operation.

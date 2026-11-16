@@ -16,7 +16,7 @@ GitHub forks do **not** copy release assets; the 1.84 GB ZIP remains only at the
 
 ## 1. Is it safe to disconnect?
 
-**Yes.** No build, flash, format, or device operation is running. The legacy-fscrypt source is committed and pushed (`manus/a115f-legacy-fscrypt@3aa20d4`), both binaries were compiled and host-tested locally and in CI, and the branch’s 81-test suite passes in CI, including the compile, ELF, in-ROM mod-install, and real `apply_modules.sh` driver checks. The policy inputs were also audited statically: the donor plat policy, donor 31.0 mapping, A11 vendor policy, and donor system_ext policy grant (or do not remove) every key permission the fix needs. The remaining limitation is external: the build job stops before `make_rom.sh` because `.github/workflows/build.yml` installs a nonexistent versioned kernel package (`linux-modules-extra-7.0.0-1014-aws`, then `linux-modules-extra-7.0.0-1017-azure`) and its apt list omits the `bc` build dependency, and the current token lacks the `workflow` scope to fix either (see §4). Do not delete the audit files listed in section 6 or the source files.
+**Yes.** No build, flash, format, or device operation is running. The legacy-fscrypt source is committed and pushed (`manus/a115f-legacy-fscrypt@3aa20d4`), both binaries were compiled and host-tested locally and in CI, and the branch’s 81-test suite passes in CI, including the compile, ELF, in-ROM mod-install, and real `apply_modules.sh` driver checks. The policy inputs were also audited statically: the donor plat policy, donor 31.0 mapping, A11 vendor policy, and donor system_ext policy grant (or do not remove) every key permission the fix needs. The policy is compiled at boot from CIL; no `precompiled_sepolicy` exists in donor system/product or A11 vendor, though the retained A11 ODM partition is unchecked (ISSUE-030). Linux 4.9 accepts the shim's 72-byte `mode=0` payload, and a full 52-command dependency audit leaves `bc` as the only missing `build_utils.sh` package. The remaining limitation is external: the build job stops before `make_rom.sh` because `.github/workflows/build.yml` installs a nonexistent versioned kernel package (`linux-modules-extra-7.0.0-1014-aws`, then `linux-modules-extra-7.0.0-1017-azure`) and its apt list omits the `bc` build dependency, and the current token lacks the `workflow` scope to fix either (see §4). Do not delete the audit files listed in section 6 or the source files.
 
 ## 2. Exact current blocker
 
@@ -61,6 +61,9 @@ There is **no successful boot**, no boot animation, and no Setup Wizard. The fix
 - Legacy key format confirmed from Android 14 source: `fscrypt_key` = 72 bytes (`mode=0`, `raw[64]`, `size=64`); names `ext4:<16 hex>`, `f2fs:<16 hex>`, `fscrypt:<16 hex>`; keyring searched in PID 1's session keyring.
 - Fscrypt ioctl structs confirmed from `include/uapi/linux/fscrypt.h`: v1 specifier `type=1`, descriptor at offset 8; ADD raw payload at offset 80; REMOVE 0x40 bytes; GET_STATUS 0x80 bytes; status `ABSENT=1`, `PRESENT=2`, `INCOMPLETELY_REMOVED=3`.
 - SELinux key rules confirmed in the donor platform `plat_sepolicy.cil` (One UI 7 / Android 15, extracted from `system_full.dat`; SHA-256 `febc700c…`), the donor `mapping/31.0.cil`, and A11 `vendor_sepolicy.cil` (`VE=SEPF_SM-A115F_12_0001`, SHA-256 `08e2f3a2…`); the donor `system_ext_sepolicy.cil` has no key rules. No policy change is needed for the intended pre-policy path.
+- The policy is compiled at boot from CIL: donor init contains the `/vendor` and `/odm` `precompiled_sepolicy` candidates, `/system/bin/secilc`, and all four CIL paths. No `precompiled_sepolicy` exists in donor system/product or A11 vendor; donor `secilc` is 346,648 bytes (SHA-256 `9aa027d0…`), donor `product_sepolicy.cil` has no key rules, and A11 `plat_sepolicy_vers.txt` is `31.0`. The A11 ODM partition is unchecked (ISSUE-030).
+- Linux 4.9 `validate_user_key()` checks the 72-byte payload length and `size` bounds but never reads `payload->mode`; the shim's `mode=0`/`raw[64]`/`size=64` payload is valid.
+- All 52 `build_utils.sh` dependencies were audited: `bc` is the only one not present on the Ubuntu 24.04 runner image or installed by the workflow apt step.
 - Donor system is not 64-bit-only. `/system/lib` contains every 32-bit dependency of `wait_for_keymaster`, all `ELF32` ARM.
 - Donor `/system/lib64` contains the complete 64-bit KM4 HIDL stack plus KeyMint V1/V2/V3 libraries; donor `keystore2` is ELF64.
 - A11 `libkeymasterdeviceutils.so` `KeymasterUtils` constructor calls `QSEECom_start_app(handle, "/vendor/firmware_mnt/image", "keymaster64", 0xa000)`, retries `"keymaster"`, then aborts via `__android_log_assert(“…”, "KeymasterUtils", "QSEECom_start_app failed")`. `libQSEEComAPI.so` opens the TA image with `fopen` and has no sleep/retry.
@@ -171,11 +174,12 @@ The old stalled partial clone at `C:\Users\claymi5433\ZineROM-a11q-src` is not t
 
 ## 7. Next offline work
 
-1. **Fix the CI workflow package line (next; user action):** in `.github/workflows/build.yml`, remove `linux-modules-extra-$(uname -r)` and add `bc` to the `apt install` list; the runner resolves the kernel package to the nonexistent `linux-modules-extra-7.0.0-1014-aws`/`-1017-azure`, and `bc` is a hard `build_utils.sh` dependency missing from the runner image. This needs a `workflow`-scoped credential or a user edit. Do not rewrite the default branch or work around the packages.
-2. **Re-dispatch the ROM build:** run `build.yml` on `manus/a115f-legacy-fscrypt`; the 76-test suite and target compile/`readelf` checks already pass, so watch the `Set up build environment` step, then the mod’s in-ROM compile/install. Fix any new failure before producing a ZIP.
-3. **Review the built system image statically** before any device test; record all hashes and logs.
-4. **Keep the status docs current** in `PORTING_STATUS.md`, `ISSUE_REGISTER.md`, `NEXT_DEVICE_TEST.md`, and `FIX_LEGACY_FSCRYPT.md`.
-5. **Optional provenance check:** reproduce `23f8998f…` in a clean environment and compare image hashes with `f51460ef…`. This validates provenance only, not bootability.
+1. **Fix the CI workflow package line (next; user action):** in `.github/workflows/build.yml`, remove `linux-modules-extra-$(uname -r)` and add `bc` to the `apt install` list; the runner resolves the kernel package to the nonexistent `linux-modules-extra-7.0.0-1014-aws`/`-1017-azure`, and `bc` is the only missing `build_utils.sh` dependency. This needs a `workflow`-scoped credential or a user edit. Do not rewrite the default branch or work around the packages.
+2. **Check the A11 ODM precompiled policy:** extract the target ODM tree or inspect the built ZIP for `/odm/etc/selinux/precompiled_sepolicy`. Donor init probes it; if present, the CIL key-rule audit does not automatically apply (ISSUE-030).
+3. **Re-dispatch the ROM build:** run `build.yml` on `manus/a115f-legacy-fscrypt`; the 81-test suite and target compile/`readelf` checks already pass, so watch the `Set up build environment` step, then the mod’s in-ROM compile/install. Fix any new failure before producing a ZIP.
+4. **Review the built system image statically** before any device test; record all hashes and logs.
+5. **Keep the status docs current** in `PORTING_STATUS.md`, `ISSUE_REGISTER.md`, `NEXT_DEVICE_TEST.md`, and `FIX_LEGACY_FSCRYPT.md`.
+6. **Optional provenance check:** reproduce `23f8998f…` in a clean environment and compare image hashes with `f51460ef…`. This validates provenance only, not bootability.
 
 Do not change fstab, FBE policy, or add another Keymaster bridge based only on static speculation.
 
@@ -261,6 +265,7 @@ Branch tree for the current asset:
 
 - Do not claim the current asset can boot with a healthy KM4; the kernel/`vold`/`init` gap is unconditional.
 - Do not claim “Android 15 removed legacy fscrypt”; LineageOS 22.2/23.1 still contain it.
+- Do not assume the retained A11 ODM has no `/odm/etc/selinux/precompiled_sepolicy`; donor init probes it before compiling CIL (ISSUE-030).
 - Do not install a `/system/bin/init` wrapper without preserving `argv[0]`, verifying the `ueventd` symlink, and labelling both `init` and `init.real` as `init_exec`.
 - Do not try to inject a session keyring into PID 1 from a helper; the kernel rejects it.
 - Do not publish another ZIP before the compile/host-test CI is green and the ROM build is statically inspected.
@@ -282,7 +287,10 @@ Branch tree for the current asset:
 - [x] Added the CI compile/ELF test; run `43913667988` passed 76/76 tests with no skips and produced verified clang-18 targets.
 - [x] Added the in-ROM mod-install test and the `od` fallback; run `43921516470` passed 80/80 tests with no skips.
 - [x] Added the real `apply_modules.sh` driver test; run `43925890423` passed 81/81 tests with no skips.
-- [x] Policy-input audit closed statically (ISSUE-029): donor `plat_sepolicy.cil`, donor `mapping/31.0.cil`, A11 `vendor_sepolicy.cil`, and donor `system_ext_sepolicy.cil` checked; the assembled policy is still unbuilt.
+- [x] Policy-input audit closed statically (ISSUE-029): donor `plat_sepolicy.cil`, donor `mapping/31.0.cil`, A11 `vendor_sepolicy.cil`, and donor `system_ext_sepolicy.cil` checked.
+- [x] Policy compile-path audit: no `precompiled_sepolicy` in donor system/product or A11 vendor; donor `secilc` present; A11 `plat_sepolicy_vers.txt=31.0`. The A11 ODM partition remains unchecked (ISSUE-030).
+- [x] Linux 4.9 payload validation and the 52-command dependency audit closed: `mode=0` is accepted; `bc` is the only missing package.
+- [ ] Check the A11 ODM for `/odm/etc/selinux/precompiled_sepolicy` (ISSUE-030).
 - [ ] Fix ISSUE-028 (remove `linux-modules-extra-$(uname -r)` and add `bc` in the workflow); re-dispatch `build.yml` and record the build outcome.
 - [ ] Build only after CI is green, then inspect the built image before any device test.
 - [ ] If the phone is available, run the one device test in section 8 after verifying the recovery path and getting explicit approval; capture both `keymaster-4-0` starts, the vold fscrypt line, and the wrapper/shim markers.
