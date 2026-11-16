@@ -464,7 +464,7 @@ This matches AOSP Android 9-12 legacy behavior and the existing A11 policy. Do n
 
 Base branch: `manus/a115f-vendor-fingerprint` at `23f8998f0200969f5748e9eb012d1dc52037a054`. Do **not** build from `build-once` or `preflight`.
 
-New files on `manus/a115f-legacy-fscrypt` (head `48438e6`, based on `manus/a115f-vendor-fingerprint@23f8998f0200969f5748e9eb012d1dc52037a054`):
+New files on `manus/a115f-legacy-fscrypt` (head `5651d76`, based on `manus/a115f-vendor-fingerprint@23f8998f0200969f5748e9eb012d1dc52037a054`):
 
 ```
 prebuilts/a115f_legacy_fscrypt/
@@ -478,13 +478,14 @@ prebuilts/a115f_legacy_fscrypt/
   tests/test_legacy.c
 scripts/patch_a115f_legacy_fscrypt_vold_rc.py
 tests/test_legacy_fscrypt_vold_rc.py
+tests/test_legacy_fscrypt_build.py
 .github/workflows/legacy-fscrypt-ci.yml   (local-only; not pushed)
 unica/mods/zz_a115f_legacy_fscrypt/
   customize.sh
   module.prop
 ```
 
-The workflow file is preserved on local branch `local/a115f-legacy-fscrypt-ci-workflow` at `5551184`, because the push credential lacks GitHub's `workflow` scope. All other files are pushed as `48438e6`.
+The workflow file is preserved on local branch `local/a115f-legacy-fscrypt-ci-workflow` at `5551184`, because the push credential lacks GitHub's `workflow` scope. All other files are pushed as `5651d76` (13 files; `48438e6` is the pointer-size ABI fix on top of `325dcd2`).
 
 Compiled outputs (not committed):
 
@@ -497,12 +498,12 @@ prebuilts/a115f_legacy_fscrypt/out/liba115f_fscrypt_shim.so
 
 `legacy-fscrypt-ci.yml` is not pushed and is not registered in the repository. The same checks run in two places that are pushed:
 
-1. `build.yml` step 1 runs `python3 -m unittest discover -s tests -v`, which includes `tests/test_legacy_fscrypt_vold_rc.py`.
+1. `build.yml` runs `python3 -m unittest discover -s tests -v`, which includes `tests/test_legacy_fscrypt_vold_rc.py` and `tests/test_legacy_fscrypt_build.py`. The latter mirrors `build.sh`, compiles both targets, compiles/runs the host tests, and verifies the ELF/dynamic-symbol contract. It skips only when no target compiler is present.
 2. `zz_a115f_legacy_fscrypt/customize.sh` compiles both targets with `build.sh`, runs `build.sh --host-test`, runs the patcher tests, verifies the donor init/ueventd layout, checks the ELF type/architecture/`PT_INTERP`/`.dynamic`/`DT_NEEDED`, verifies the shim exports `ioctl` and no memory functions and imports only `__android_log_print`/`__errno`, and checks the wrapper/shim markers.
 
 Local equivalent results (Zig 0.17.1 / clang 22.1.8 + lld) are recorded in `PORTING_STATUS.md` fact 45: both binaries compile without warnings; the wrapper is a 2624-byte `ET_EXEC` and the shim a 6280-byte `ET_DYN`, each with 0 `DT_NEEDED`; host tests pass.
 
-CI registration is fixed (ISSUE-027): `build.yml` is active (id `420352259`) and run `43909580926` was dispatched at `48438e6`. Step 1 passed all 69 tests, including the 7 patcher tests. The job then failed before `make_rom.sh` in `Set up build environment` with `E: Unable to locate package linux-modules-extra-7.0.0-1014-aws` (ISSUE-028), so the mod’s compile/host-test/`readelf` checks did not run. After the workflow line is fixed, re-dispatch and record the step logs. Do not modify `publish-public.yml`.
+CI registration is fixed (ISSUE-027): `build.yml` is active (id `420352259`). Run `43909580926` at `48438e6` passed 69 tests and then failed at `Set up build environment` with `E: Unable to locate package linux-modules-extra-7.0.0-1014-aws` (ISSUE-028). After adding `tests/test_legacy_fscrypt_build.py`, run `43913667988` at `5651d76` passed 76 tests with no skips: Ubuntu clang 18 compiled both targets and `readelf` verified the symbol contract. CI hashes: wrapper `530e2b3c…` (5296 bytes), shim `1faab403…` (6880 bytes). The same run then failed at `Set up build environment` with `E: Unable to locate package linux-modules-extra-7.0.0-1017-azure`, confirming the package name depends on the runner pool. The in-ROM compile/install checks inside `make_rom.sh` still have not run. After the workflow line is fixed, re-dispatch and record the step logs. Do not modify `publish-public.yml`.
 
 ### 7.3 Mod execution order
 
@@ -570,7 +571,8 @@ Do not silently skip the fix and ship a ZIP that cannot pass FBE.
 - Verify the mod's system-image checks against the actual donor `system/bin/init` and `ueventd` symlink at build time; fail closed on any layout mismatch.
 - The mod greps the compiled wrapper for `A115F_FSCRYPT_WRAPPER` and the shim for `SHIM_LOADED`; it performs the `readelf`/`awk` dependency and export checks.
 - Unit-test the `vold.rc` patcher against single-line, multiline, CRLF, missing-service, and already-patched inputs.
-- **Local result (2026-11-16):** all checks pass with Zig 0.17.1/clang 22.1.8: wrapper `ET_EXEC`, 2624 bytes, no `PT_INTERP`/`.dynamic`, 0 `DT_NEEDED`; shim `ET_DYN`, 6280 bytes, 0 `DT_NEEDED`, imports exactly `__android_log_print __errno`, exports `ioctl`, no memory exports; host tests print `all legacy fscrypt host tests passed`. The host tests initially crashed on Windows because the callback arguments used `unsigned long` (32-bit on LLP64); switching to `uintptr_t` fixed the host-only truncation and left the aarch64 binaries byte-identical. CI run `43909580926` then passed all 69 tests, including the 7 patcher tests. The CI build job did not reach the mod’s compile/`readelf` checks because of ISSUE-028, so an Ubuntu clang 18 compile of the freestanding targets is still unverified.
+- **Local result (2026-11-16):** all checks pass with Zig 0.17.1/clang 22.1.8: wrapper `ET_EXEC`, 2624 bytes, no `PT_INTERP`/`.dynamic`, 0 `DT_NEEDED`; shim `ET_DYN`, 6280 bytes, 0 `DT_NEEDED`, imports exactly `__android_log_print __errno`, exports `ioctl`, no memory exports; host tests print `all legacy fscrypt host tests passed`. The host tests initially crashed on Windows because the callback arguments used `unsigned long` (32-bit on LLP64); switching to `uintptr_t` fixed the host-only truncation and left the aarch64 binaries byte-identical.
+- **CI result (2026-11-16):** run `43913667988` at `5651d76` executed `tests/test_legacy_fscrypt_build.py` with no skips. Ubuntu clang 18 compiled both freestanding targets, `cc` compiled and ran the host tests, and `readelf` verified the ELF/dynamic-symbol contract above. CI-built SHA-256: wrapper `530e2b3c1b9ddb5f66ca70ebde6ca74656428098dac2a50332d7928c25b00974` (5296 bytes), shim `1faab403b0b8c9c46c3e6f23d2b44270323e3bb3b860857295d502afc242397d` (6880 bytes). The size/hash difference from the Zig build is expected from the different toolchain/linker; the verified properties match. This is compile/test-step evidence, not a ROM build.
 
 ### 8.2 Device test matrix
 
@@ -720,3 +722,4 @@ Kernel references:
 - 2026-11-16 (build): Compiled both targets locally with Zig 0.17.1 (clang 22.1.8 + lld) using the project flags, no warnings. Wrapper: 2624-byte ELF64 `ET_EXEC`, entry `0x1010848`, no `PT_INTERP`, no `.dynamic`, 0 `DT_NEEDED`. Shim: 6280-byte ELF64 `ET_DYN`, 0 `DT_NEEDED`, imports exactly `__android_log_print` and `__errno`, exports `ioctl`, no memory exports. The first host-test run crashed with `0xC0000005` because `a115f_keyctl_fn` used 32-bit `unsigned long` on Windows LLP64 and truncated a fake-keyring string pointer; switching the callback arguments to `uintptr_t` fixed the tests and left the aarch64 binaries byte-identical (same SHA-256 before and after). Host tests now print `all legacy fscrypt host tests passed`. Pushed as `325dcd2` (12 files) and `48438e6` (ABI fix); the CI workflow remains local-only (`local/a115f-legacy-fscrypt-ci-workflow@5551184`). R0; no ROM build or device test.
 - 2026-11-16 (CI blocker): `POST .../actions/workflows/build.yml/dispatches` returns HTTP 404 and the workflow list is empty (`total_count: 0`), although the default branch `oneui7-a11q-boot` contains `.github/workflows/build.yml` (blob `ffc26cf3…`, last modified 2026-10-21), Actions is enabled, and the credential has `repo` scope. The repository has no registered workflows; this requires user action (enable/register workflows in the GitHub UI or provide a `workflow`-scoped credential). Do not rewrite the default branch. R0.
 - 2026-11-16 (CI registration and first run): Re-asserted `PUT /repos/zinerom48-tech/ZineROM-a11q/actions/permissions` (`enabled: true`, `allowed_actions: all`, `sha_pinning_required: false`); HTTP 204. `GET /actions/workflows` then reported `total_count: 2` (`build.yml` id `420352259`, `publish-public.yml` id `420352261`, both active). Dispatched `build.yml` at `manus/a115f-legacy-fscrypt@48438e6` with `audit_only=false`; run `43909580926`. The test step passed all 69 tests (`Ran 69 tests in 0.214s`, `OK`), including the 7 patcher tests. The build job then failed before `make_rom.sh` in `Set up build environment` with `E: Unable to locate package linux-modules-extra-7.0.0-1014-aws` (exit 100); the package does not exist in any Ubuntu suite/architecture and all 15 branches carry the same line. The mod’s compile/host-test/`readelf` checks did not run. The minimal fix is to remove `linux-modules-extra-$(uname -r)` from the apt install list; it is pending because the token scopes are `gist, read:org, repo` (no `workflow`). No release, flash, or `/data` operation performed. R0.
+- 2026-11-16 (CI compile evidence): Added `tests/test_legacy_fscrypt_build.py` at `5651d76`; run `43913667988` passed all 76 tests (`OK`, 3.028 s) with no skips. Ubuntu clang 18 compiled the wrapper and shim, the host tests compiled and ran, and `readelf` verified the dynamic-symbol contract. CI hashes: wrapper `530e2b3c…` (5296 bytes), shim `1faab403…` (6880 bytes). The run still failed at `Set up build environment`, now on Azure kernel `7.0.0-1017-azure`, proving the workflow's `$(uname -r)` bug is pool-dependent; the in-ROM compile/install inside `make_rom.sh` remains unexercised. No release, flash, or `/data` operation performed. R0.
