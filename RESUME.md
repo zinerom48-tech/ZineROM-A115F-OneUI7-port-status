@@ -4,7 +4,7 @@ Snapshot: **2026-11-16**, legacy-fscrypt implementation + CI compile checkpoint.
 
 Status board: <https://github.com/zinerom48-tech/ZineROM-A115F-OneUI7-port-status>
 Working branch for this checkpoint: `audit/2026-11-03-keymaster-barrier` (do not overwrite `main`).
-Source branch: `manus/a115f-legacy-fscrypt`, based on `manus/a115f-vendor-fingerprint@23f8998f0200969f5748e9eb012d1dc52037a054`; pushed at `5651d76` (parent `48438e6`, ABI fix).
+Source branch: `manus/a115f-legacy-fscrypt`, based on `manus/a115f-vendor-fingerprint@23f8998f0200969f5748e9eb012d1dc52037a054`; pushed at `74c8198` (parent `5651d76`; `48438e6` is the ABI fix).
 
 Forks on the same account:
 
@@ -16,7 +16,7 @@ GitHub forks do **not** copy release assets; the 1.84 GB ZIP remains only at the
 
 ## 1. Is it safe to disconnect?
 
-**Yes.** No build, flash, format, or device operation is running. The legacy-fscrypt source is committed and pushed (`manus/a115f-legacy-fscrypt@5651d76`), both binaries were compiled and host-tested locally and in CI, and the branch’s 76-test suite passes in CI, including the compile and ELF checks. The remaining limitation is external: the build job stops before `make_rom.sh` because `.github/workflows/build.yml` installs a nonexistent versioned kernel package (`linux-modules-extra-7.0.0-1014-aws`, then `linux-modules-extra-7.0.0-1017-azure`), and the current token lacks the `workflow` scope to fix it (see §4). Do not delete the audit files listed in section 6 or the source files.
+**Yes.** No build, flash, format, or device operation is running. The legacy-fscrypt source is committed and pushed (`manus/a115f-legacy-fscrypt@74c8198`), both binaries were compiled and host-tested locally and in CI, and the branch’s 80-test suite passes in CI, including the compile, ELF, and in-ROM mod-install checks. The remaining limitation is external: the build job stops before `make_rom.sh` because `.github/workflows/build.yml` installs a nonexistent versioned kernel package (`linux-modules-extra-7.0.0-1014-aws`, then `linux-modules-extra-7.0.0-1017-azure`), and the current token lacks the `workflow` scope to fix it (see §4). Do not delete the audit files listed in section 6 or the source files.
 
 ## 2. Exact current blocker
 
@@ -93,14 +93,16 @@ There is **no successful boot**, no boot animation, and no Setup Wizard. The fix
 - CI run `43909580926` on `manus/a115f-legacy-fscrypt@48438e6` passed the full `python3 -m unittest discover -s tests -v` step: `Ran 69 tests in 0.214s`, `OK`, including all 7 patcher tests.
 - The same run failed before `make_rom.sh` in `Set up build environment`: `E: Unable to locate package linux-modules-extra-7.0.0-1014-aws` (exit 100). Ubuntu publishes no such package for the runner kernel `7.0.0-1014-aws`, and all 15 branches contain the same `linux-modules-extra-$(uname -r)` line.
 - CI run `43913667988` on `5651d76` passed `Ran 76 tests in 3.028s`, `OK`, including 7 new build tests that compiled both targets with clang 18, ran the host tests, and verified the ELF/dynamic-symbol contract with no skips. CI hashes: wrapper `530e2b3c…` (5296 bytes), shim `1faab403…` (6880 bytes).
-- Run 2 still failed at `Set up build environment`, now with `E: Unable to locate package linux-modules-extra-7.0.0-1017-azure` (exit 100), because the assigned runner kernel changed. The in-ROM install/metadata/`vold.rc` stages remain unexercised.
+- Run 2 still failed at `Set up build environment`, now with `E: Unable to locate package linux-modules-extra-7.0.0-1017-azure` (exit 100), because the assigned runner kernel changed.
+- CI run `43921516470` on `74c8198` passed `Ran 80 tests in 6.808s`, `OK`, including the four new mod-install tests (compile, donor init move, wrapper/shim install, ueventd symlink, exactly-once metadata, one `LD_PRELOAD`, idempotence, fail-closed). The mod now uses coreutils `od` instead of `xxd`. Step 8 still failed on `linux-modules-extra-7.0.0-1017-azure`.
+- The mod's own install/metadata/`vold.rc` stages are now covered by `tests/test_legacy_fscrypt_mod_install.py`; the surrounding `make_rom.sh` flow remains unexercised.
 - The minimal fix is to remove that package from the apt install list. It needs a `workflow`-scoped credential or a user edit; the current token scopes are `gist, read:org, repo`.
 - Do not build or publish another ZIP until CI is running and the ROM build is inspected. A candidate ROM build must start from `manus/a115f-legacy-fscrypt`, must not run `publish-public.yml`, and must stay R0 until a device reaches the framework.
 
 ## 5. What the fix needs, in order
 
 1. **Fix the CI workflow package line (next; user action).** Remove `linux-modules-extra-$(uname -r)` from the `apt install` list in `.github/workflows/build.yml`; the runner resolves it to a nonexistent versioned package whose name changes with the pool (`7.0.0-1014-aws`, then `7.0.0-1017-azure`). This needs a `workflow`-scoped credential or a user edit. Do not shadow `uname`/`sudo`, add a dummy package, pin a kernel package, or disable the step.
-2. **Re-dispatch `build.yml` on `manus/a115f-legacy-fscrypt`.** The 76-test suite and target compile/`readelf` checks already pass; watch the `Set up build environment` step, then the mod’s in-ROM compile/install inside `make_rom.sh`. Fix any new failure before building.
+2. **Re-dispatch `build.yml` on `manus/a115f-legacy-fscrypt`.** The 80-test suite and the target compile/`readelf`/mod-install checks already pass; watch the `Set up build environment` step, then the full `make_rom.sh` flow. Fix any new failure before building.
 3. **Record the result.** The ROM build must produce and inspect a ZIP; record the ZIP SHA-256 and the SHA-256 of `/system/bin/init`, `/system/bin/init.real`, and the shim. Do not publish.
 4. **Review the built image statically.** Confirm `system/bin/init` is the wrapper, `init.real` is the donor init, `ueventd` still resolves to `init`, `vold.rc` has exactly one `setenv LD_PRELOAD`, and the shim is present in `/system/lib64` with the expected label.
 5. **Device test only after recovery is verified.** Capture wrapper markers (`A115F_FSCRYPT_WRAPPER: ENTER`, `SESSION_OK`, `FSCRYPT_OK`, `EXEC`), logcat tag `A115F_FSCRYPT` (`SHIM_LOADED`, `ADD_OK`/`ADD_FAIL`, `REMOVE_*`, `STATUS_*`), the vold fscrypt error (if any), both KM4 starts, and AVC denials. Do not format `/data`, `/keydata`, or `/keyrefuge`.
@@ -110,7 +112,7 @@ There is **no successful boot**, no boot animation, and no Setup Wizard. The fix
 
 The audit workspace is `C:\Users\claymi5433\AppData\Local\Temp\opencode`.
 
-The source workspace is `C:\Users\claymi5433\Documents\Default Project\ZineROM-a11q-src`. It is a depth-1, blobless partial clone of `zinerom48-tech/ZineROM-a11q`; `HEAD` is `refs/heads/manus/a115f-legacy-fscrypt` at `5651d76`, the full donor tree is in the index, and 13 new files are committed on the branch. The standalone CI workflow is preserved on local branch `local/a115f-legacy-fscrypt-ci-workflow` at `5551184` and is not pushed. The worktree does not contain the donor tree, so never run `git add -A` or `git reset --hard`.
+The source workspace is `C:\Users\claymi5433\Documents\Default Project\ZineROM-a11q-src`. It is a depth-1, blobless partial clone of `zinerom48-tech/ZineROM-a11q`; `HEAD` is `refs/heads/manus/a115f-legacy-fscrypt` at `74c8198`, the full donor tree is in the index, and 14 new files are committed on the branch. The standalone CI workflow is preserved on local branch `local/a115f-legacy-fscrypt-ci-workflow` at `5551184` and is not pushed. The worktree does not contain the donor tree, so never run `git add -A` or `git reset --hard`.
 
 | Source path | Meaning |
 |---|---|
@@ -122,6 +124,8 @@ The source workspace is `C:\Users\claymi5433\Documents\Default Project\ZineROM-a
 | `unica/mods/zz_a115f_legacy_fscrypt/customize.sh` | Installs wrapper/init.real/shim, patches `vold.rc`, sets metadata |
 | `scripts/patch_a115f_legacy_fscrypt_vold_rc.py` | Idempotent `setenv LD_PRELOAD` patcher |
 | `tests/test_legacy_fscrypt_vold_rc.py` | Patcher unit tests |
+| `tests/test_legacy_fscrypt_build.py` | CI compile + ELF/symbol contract test |
+| `tests/test_legacy_fscrypt_mod_install.py` | In-ROM mod install/metadata/patcher test |
 | `.github/workflows/legacy-fscrypt-ci.yml` | Compile, host-test, and ELF/symbol checks (local-only branch; not pushed) |
 
 | Audit file | Meaning |
@@ -269,9 +273,10 @@ Branch tree for the current asset:
 
 - [ ] Read this file, `PORTING_STATUS.md`, `ISSUE_REGISTER.md`, and `FIX_LEGACY_FSCRYPT.md`.
 - [ ] Confirm the status repo is at the latest audit commit.
-- [x] Source committed and pushed as `manus/a115f-legacy-fscrypt@5651d76`.
+- [x] Source committed and pushed as `manus/a115f-legacy-fscrypt@74c8198`.
 - [x] CI workflow registration fixed (ISSUE-027); `build.yml` dispatched as run `43909580926`; 69/69 tests passed.
 - [x] Added the CI compile/ELF test; run `43913667988` passed 76/76 tests with no skips and produced verified clang-18 targets.
+- [x] Added the in-ROM mod-install test and the `od` fallback; run `43921516470` passed 80/80 tests with no skips.
 - [ ] Fix ISSUE-028 (remove `linux-modules-extra-$(uname -r)` from the workflow); re-dispatch `build.yml` and record the build outcome.
 - [ ] Build only after CI is green, then inspect the built image before any device test.
 - [ ] If the phone is available, run the one device test in section 8 after verifying the recovery path and getting explicit approval; capture both `keymaster-4-0` starts, the vold fscrypt line, and the wrapper/shim markers.

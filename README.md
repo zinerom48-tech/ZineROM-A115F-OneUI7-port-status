@@ -17,13 +17,13 @@ Maintained for **zinerom48-tech** so the latest evidence and next actions are av
 |---|---|---|
 | Successful boot | **0%** | No completed boot, no boot animation, no Setup Wizard. |
 | Boot stages reached | **~45%** | Bootloader → kernel → first-stage init → second-stage init → vendor services/HALs. It fails at `/data` file-based encryption before zygote and `system_server`. |
-| Offline root-cause isolation | **~95%** | Code-level root cause established: the A11 4.9 kernel implements only legacy fscrypt, while the Samsung donor `vold` and `init` have the legacy key path stripped. The fix compiles and passes ELF checks in CI; the remaining question is runtime behavior. |
-| Validated fix | **0%** | The source fix is compiled, host-tested, and CI-tested, but it has not been ROM-built or device-tested. |
+| Offline root-cause isolation | **~95%** | Code-level root cause established: the A11 4.9 kernel implements only legacy fscrypt, while the Samsung donor `vold` and `init` have the legacy key path stripped. The fix compiles, passes ELF checks, and is exercised through the real mod install path in CI; the remaining question is runtime behavior. |
+| Validated fix | **0%** | The source fix is compiled, host-tested, and CI-tested (including the in-ROM mod install), but it has not been ROM-built or device-tested. |
 | Device validation | **0%** | No physical A11 available. |
 
 These are bookkeeping estimates, **not** a probability that the ROM will boot. The remaining Android framework/UI work is larger than the stage count suggests.
 
-**2026-11-16 update:** the fix branch `manus/a115f-legacy-fscrypt@5651d76` adds a PID-1 `/system/bin/init` keyring wrapper and a 64-bit `vold` `LD_PRELOAD` shim. CI run `43913667988` passed all 76 tests, including the new `vold.rc` patcher tests and the build tests that compile both targets with clang 18 and verify their ELF/symbol contract. The same run’s **build** stopped before `make_rom.sh` because `.github/workflows/build.yml` installs a nonexistent versioned kernel package (`linux-modules-extra-7.0.0-1017-azure` in that run); the token lacks `workflow` scope to fix that line. No ROM build or device test exists yet.
+**2026-11-16 update:** the fix branch `manus/a115f-legacy-fscrypt@74c8198` adds a PID-1 `/system/bin/init` keyring wrapper, a 64-bit `vold` `LD_PRELOAD` shim, and an in-ROM mod-install test. CI run `43921516470` passed all 80 tests, including the `vold.rc` patcher tests, the build tests that compile both targets with clang 18 and verify their ELF/symbol contract, and four tests that drive the real mod install (donor init move, wrapper/shim install, ueventd symlink, exactly-once metadata, one `LD_PRELOAD`, idempotence, fail-closed). The mod now uses coreutils `od` instead of `xxd`. The same run’s **build** stopped before `make_rom.sh` because `.github/workflows/build.yml` installs a nonexistent versioned kernel package (`linux-modules-extra-7.0.0-1017-azure` in that run); the token lacks `workflow` scope to fix that line. No ROM build or device test exists yet.
 
 ## What is confirmed
 
