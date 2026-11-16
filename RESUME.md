@@ -1,9 +1,10 @@
 # RESUME — A115F One UI 7 Port
 
-Snapshot: **2026-11-16**, legacy-fscrypt root cause and fix-design checkpoint.
+Snapshot: **2026-11-16**, legacy-fscrypt implementation checkpoint.
 
 Status board: <https://github.com/zinerom48-tech/ZineROM-A115F-OneUI7-port-status>
 Working branch for this checkpoint: `audit/2026-11-03-keymaster-barrier` (do not overwrite `main`).
+Source branch: `manus/a115f-legacy-fscrypt`, based on `manus/a115f-vendor-fingerprint@23f8998f0200969f5748e9eb012d1dc52037a054`; pushed at `48438e6` (parent `325dcd2`).
 
 Forks on the same account:
 
@@ -15,7 +16,7 @@ GitHub forks do **not** copy release assets; the 1.84 GB ZIP remains only at the
 
 ## 1. Is it safe to disconnect?
 
-**Yes.** No build, flash, format, download, or device operation is running. The only pending work is committing/pushing this documentation checkpoint and continuing static work. The partial source clone at `C:\Users\claymi5433\ZineROM-a11q-src` is stalled and should be abandoned; use raw GitHub/API fetches instead. Do not delete the audit files listed in section 6.
+**Yes.** No build, flash, format, or device operation is running. The legacy-fscrypt source is committed and pushed (`manus/a115f-legacy-fscrypt@48438e6`), and both binaries were compiled and host-tested locally. The remaining limitation is external: the GitHub repository currently has zero registered Actions workflows, so the ROM build cannot be dispatched (see §4). Do not delete the audit files listed in section 6 or the source files.
 
 ## 2. Exact current blocker
 
@@ -35,14 +36,14 @@ The code-level root cause is now established. It has two independent parts, and 
 
 **Consequence:** the current `f51460ef…` asset cannot reach the framework even with a perfectly healthy KM4. A diagnostic run on it can only confirm the failure stage and whether key retrieval failed earlier.
 
-**Leading fix design (not built):**
+**Implemented fix (source only; not compiled or built):**
 
-- **Part A — ramdisk `/init` wrapper.** Runs before SELinux policy load, creates PID 1's session keyring and the named `fscrypt` keyring in the kernel domain, then execs the real first-stage init. `/system/bin/init` is left untouched because `/system/bin/ueventd` is a symlink to it and runs under `ueventd` seclabel.
-- **Part B — 64-bit `vold` `LD_PRELOAD` shim.** Calls the real `ioctl` first; only on `ENOTTY` translates ADD/REMOVE/GET_STATUS to legacy `ext4:`/`f2fs:`/`fscrypt:` logon keys with a 72-byte `fscrypt_key` payload.
-- SELinux already permits the intended operations: `(allow domain init (key (search)))`, `(allow domain vold (key (search)))`, `(allow init init (key (write search setattr)))`, `(allow vold init (key (write search setattr)))`, `(allow vold vold (key (write search setattr)))`, plus the versioned `kernel_31_0` rules.
+- **Part A — `/system/bin/init` wrapper.** AOSP 12 first-stage init executes `/system/bin/init selinux_setup` as PID 1 before policy load. The wrapper creates PID 1's session keyring and the named `fscrypt` keyring, preserves `argv[0]`, skips keyring setup for the `ueventd` symlink path, and execs the donor init at `/system/bin/init.real`. Both files are labelled `init_exec` because the post-policy `second_stage` re-exec runs the wrapper again. The boot image is untouched.
+- **Part B — 64-bit `vold` `LD_PRELOAD` shim.** Calls the real `ioctl` first; only on `ENOTTY` translates ADD/REMOVE/GET_STATUS to legacy `ext4:`/`f2fs:`/`fscrypt:` logon keys with a 72-byte `fscrypt_key` payload. The shim creates the `fscrypt` keyring if it is missing (fallback).
+- SELinux already permits the intended pre-policy path: `(allow domain init (key (search)))`, `(allow domain vold (key (search)))`, `(allow init init (key (write search setattr)))`, `(allow vold init (key (write search setattr)))`, `(allow vold vold (key (write search setattr)))`, plus the versioned `kernel_31_0` rules.
 - Full ABI, structs, syscall numbers, packaging, and risks: `FIX_LEGACY_FSCRYPT.md`.
 
-There is **no successful boot**, no boot animation, and no Setup Wizard. No fix has been built or tested. Readiness remains **R0**.
+There is **no successful boot**, no boot animation, and no Setup Wizard. No fix has been compiled into a ROM or tested. Readiness remains **R0**.
 
 ## 3. What is already done
 
@@ -59,7 +60,7 @@ There is **no successful boot**, no boot animation, and no Setup Wizard. No fix 
 - AOSP/Lineage `init.cpp` still calls `keyctl_get_keyring_ID(KEY_SPEC_SESSION_KEYRING, 1)`; `FscryptInstallKeyring()` creates the named `fscrypt` keyring.
 - Legacy key format confirmed from Android 14 source: `fscrypt_key` = 72 bytes (`mode=0`, `raw[64]`, `size=64`); names `ext4:<16 hex>`, `f2fs:<16 hex>`, `fscrypt:<16 hex>`; keyring searched in PID 1's session keyring.
 - Fscrypt ioctl structs confirmed from `include/uapi/linux/fscrypt.h`: v1 specifier `type=1`, descriptor at offset 8; ADD raw payload at offset 80; REMOVE 0x40 bytes; GET_STATUS 0x80 bytes; status `ABSENT=1`, `PRESENT=2`, `INCOMPLETELY_REMOVED=3`.
-- SELinux key rules confirmed in donor `plat_sepolicy.cil` and A11 `vendor_sepolicy.cil`; no policy change is needed for the intended path.
+- SELinux key rules confirmed in the A11 target `plat_sepolicy.cil` (API 31, from `system_big3.dat`) and A11 `vendor_sepolicy.cil`; no policy change is needed for the intended pre-policy path.
 - Donor system is not 64-bit-only. `/system/lib` contains every 32-bit dependency of `wait_for_keymaster`, all `ELF32` ARM.
 - Donor `/system/lib64` contains the complete 64-bit KM4 HIDL stack plus KeyMint V1/V2/V3 libraries; donor `keystore2` is ELF64.
 - A11 `libkeymasterdeviceutils.so` `KeymasterUtils` constructor calls `QSEECom_start_app(handle, "/vendor/firmware_mnt/image", "keymaster64", 0xa000)`, retries `"keymaster"`, then aborts via `__android_log_assert(“…”, "KeymasterUtils", "QSEECom_start_app failed")`. `libQSEEComAPI.so` opens the TA image with `fopen` and has no sleep/retry.
@@ -77,35 +78,49 @@ There is **no successful boot**, no boot animation, and no Setup Wizard. No fix 
 - The `/oem` zero-superblock mount is a stock A11 init action; boot continues past it.
 - Samsung ODE/UCM compatibility is **closed** for this failure: donor `vold` calls `isUcmOdeMode()` only while parsing `wrappedkey_v0`; A11 `/data` has no such flag, and donor `fbeEnable()` does not consume `/keydata` or `/keyrefuge`.
 - Source-branch audit: only `manus/a115f-vendor-fingerprint` at `23f8998f…` contains `scripts/patch_a115f_init.py` and the barrier. `build-once` is an ancestor; `preflight` is 2 ahead/15 behind and lacks the barrier.
-- `/system/bin/ueventd` is a build symlink to `init` (`symlinks: ["ueventd"]` in `init/Android.bp`), and `service ueventd … seclabel u:r:ueventd:s0`. This rules out replacing `/system/bin/init`.
+- `/system/bin/ueventd` is a build symlink to `init` (`symlinks: ["ueventd"]` in `init/Android.bp`), and `service ueventd … seclabel u:r:ueventd:s0`. A `/system/bin/init` wrapper must preserve `argv[0]` and skip keyring setup for ueventd; the mod verifies the symlink target before installing it.
 - Full donor system image reconstructed: `system_full.dat`, exactly `3,213,774,848` bytes.
 - Full donor product stream reconstructed: `product_final.dat`, exactly `312,815,616` bytes.
 - Compatibility audit: no additional kernel, VINTF, boot-image, or installer defect beyond the FBE root cause. The installer does not touch `/data`; dynamic-partition geometry matches the donor images.
 
 ## 4. Build results
 
-- **No build was run in this session.**
+- **No ROM build was run.**
 - No new ZIP was produced.
-- No local build has been reproduced.
-- The only artifact is the public `f51460ef…` ZIP from Actions run `#40494388352`, commit `23f8998f…`.
+- The only ROM artifact is the public `f51460ef…` ZIP from Actions run `#40494388352`, commit `23f8998f…`.
 - That artifact is not boot-tested and cannot succeed at FBE on this kernel.
-- Do not build or publish another ZIP until the wrapper/shim fix exists and is reviewed. A candidate fix build must start from a new branch based on `23f8998f…`, must not run `publish-public.yml`, and must stay R0 until a device reaches the framework.
+- The fix binaries were compiled locally with Zig 0.17.1 (clang 22.1.8 + lld), host tests pass, and the ELF checks pass. They have **not** been built by CI, packaged into a ROM, or device-tested.
+- GitHub currently reports zero registered workflows for `zinerom48-tech/ZineROM-a11q`; a dispatch of `build.yml` returns HTTP 404 even though the default branch contains the file and Actions is enabled. This is an external blocker requiring user action.
+- Do not build or publish another ZIP until CI is running and the ROM build is inspected. A candidate ROM build must start from `manus/a115f-legacy-fscrypt`, must not run `publish-public.yml`, and must stay R0 until a device reaches the framework.
 
 ## 5. What the fix needs, in order
 
-1. **Confirm the ramdisk layout.** Inspect the stock A11 `boot.img` ramdisk: exact `/init` path, whether it is a real ELF or a symlink, compression/header version, and whether any existing mod repacks the ramdisk. The wrapper must be in the first-stage ramdisk before policy load. There is no existing boot repack step; a new mod must patch `$WORK_DIR/kernel/boot.img`.
-2. **File label: not required.** `/init.real` is exec'd before SELinux policy load, so no `init_exec` label or ramdisk `file_contexts` entry is consulted. The `/init` path and `/init.real` both live on the pre-policy rootfs.
-3. **Write the wrapper** (`init_a115f_keyring.c`): static arm64, raw syscalls `keyctl=219`, `add_key=217`, `KEY_SPEC_SESSION_KEYRING=-3`, `KEYCTL_GET_KEYRING_ID=0`, `KEYCTL_SEARCH=10`. Create the session keyring with `keyctl(GET_KEYRING_ID, -3, 1)`, search for the named `fscrypt` keyring, create it with `add_key("keyring", "fscrypt", NULL, 0, -3)` if absent, write markers to `/dev/kmsg`, exec `/init.real`. Never abort the boot on wrapper failure.
-4. **Write the shim** (`a115f_fscrypt_shim.c`): 64-bit shared object, real `ioctl` via raw `SYS_ioctl` (29), fallback only on `ENOTTY`. Decode v1 ADD, build the 72-byte payload, `add_key("logon", name, &fs_key, 72, fscrypt_keyring_serial)` for the three prefixes; REMOVE unlinks all three and returns `ENOKEY` if any is missing; GET_STATUS reports PRESENT/ABSENT. Log one marker per result.
-5. **Packaging:** wrapper + `init.real` in the boot ramdisk; shim in `/system/lib64`; `setenv LD_PRELOAD /system/lib64/liba115f_fscrypt_shim.so` in the donor system `vold.rc`; `SET_METADATA` for the shim. No new file context for `/init.real`. Do not touch `/data`, `/keydata`, or `/keyrefuge`.
-6. **CI:** add a compile/test job to `.github/workflows/build.yml` (or a separate workflow) that builds the wrapper and shim with the Android clang toolchain and runs host tests for the ioctl decoder. Do not publish an artifact.
-7. **Review before build:** verify the shim’s assumptions against donor `vold`’s actual call sites and the 4.9 keyring semantics; verify the wrapper does not run in the `ueventd`/`watchdogd` path.
+1. **Unblock Actions workflow registration (next; user action).** The repository has no registered workflows: `POST .../actions/workflows/build.yml/dispatches` returns HTTP 404 and `GET /actions/workflows` returns `total_count: 0`, although `oneui7-a11q-boot` contains `.github/workflows/build.yml`, Actions is enabled, and the token has `repo` scope. Enable/register workflows in the GitHub UI or provide a `workflow`-scoped credential. Do not force-push the default branch.
+2. **Dispatch `build.yml` on `manus/a115f-legacy-fscrypt`.** The first step runs all `tests/`; the mod then compiles the wrapper and shim, runs the host tests, runs the `vold.rc` patcher tests, and performs the ELF/symbol checks. Fix any failure before building.
+3. **Record the result.** The ROM build must produce and inspect a ZIP; record the ZIP SHA-256 and the SHA-256 of `/system/bin/init`, `/system/bin/init.real`, and the shim. Do not publish.
+4. **Review the built image statically.** Confirm `system/bin/init` is the wrapper, `init.real` is the donor init, `ueventd` still resolves to `init`, `vold.rc` has exactly one `setenv LD_PRELOAD`, and the shim is present in `/system/lib64` with the expected label.
+5. **Device test only after recovery is verified.** Capture wrapper markers (`A115F_FSCRYPT_WRAPPER: ENTER`, `SESSION_OK`, `FSCRYPT_OK`, `EXEC`), logcat tag `A115F_FSCRYPT` (`SHIM_LOADED`, `ADD_OK`/`ADD_FAIL`, `REMOVE_*`, `STATUS_*`), the vold fscrypt error (if any), both KM4 starts, and AVC denials. Do not format `/data`, `/keydata`, or `/keyrefuge`.
+6. **Keep the status docs current.** Update `PORTING_STATUS.md`, `ISSUE_REGISTER.md`, `NEXT_DEVICE_TEST.md`, and `FIX_LEGACY_FSCRYPT.md` with the build hashes and any CI failure output.
 
 ## 6. Audit workspace state
 
 The audit workspace is `C:\Users\claymi5433\AppData\Local\Temp\opencode`.
 
-| File | Meaning |
+The source workspace is `C:\Users\claymi5433\Documents\Default Project\ZineROM-a11q-src`. It is a depth-1, blobless partial clone of `zinerom48-tech/ZineROM-a11q`; `HEAD` is `refs/heads/manus/a115f-legacy-fscrypt` at `48438e6`, the full donor tree is in the index, and 12 new files are committed on the branch. The standalone CI workflow is preserved on local branch `local/a115f-legacy-fscrypt-ci-workflow` at `5551184` and is not pushed. The worktree does not contain the donor tree, so never run `git add -A` or `git reset --hard`.
+
+| Source path | Meaning |
+|---|---|
+| `prebuilts/a115f_legacy_fscrypt/src/init_wrapper.c` | Freestanding `/system/bin/init` wrapper |
+| `prebuilts/a115f_legacy_fscrypt/src/fscrypt_legacy.c` | Legacy key payload/name/install/evict/status helpers |
+| `prebuilts/a115f_legacy_fscrypt/src/fscrypt_legacy_shim.c` | vold `ioctl` `LD_PRELOAD` shim |
+| `prebuilts/a115f_legacy_fscrypt/build.sh` | AArch64 build and host-test entry point |
+| `prebuilts/a115f_legacy_fscrypt/tests/test_legacy.c` | Host tests for the legacy helpers |
+| `unica/mods/zz_a115f_legacy_fscrypt/customize.sh` | Installs wrapper/init.real/shim, patches `vold.rc`, sets metadata |
+| `scripts/patch_a115f_legacy_fscrypt_vold_rc.py` | Idempotent `setenv LD_PRELOAD` patcher |
+| `tests/test_legacy_fscrypt_vold_rc.py` | Patcher unit tests |
+| `.github/workflows/legacy-fscrypt-ci.yml` | Compile, host-test, and ELF/symbol checks (local-only branch; not pushed) |
+
+| Audit file | Meaning |
 |---|---|
 | `system_full.dat` | Complete donor system image, `3,213,774,848` bytes |
 | `product_final.dat` | Complete donor product stream, `312,815,616` bytes |
@@ -140,15 +155,16 @@ The audit workspace is `C:\Users\claymi5433\AppData\Local\Temp\opencode`.
 | `donor_lib64.txt` | Complete donor 64-bit library listing |
 | `libqsee_strings.txt` | TA image-open behavior and no retry sleep |
 
-The partial clone `C:\Users\claymi5433\ZineROM-a11q-src` has a stale `tmp_pack_dxxDeC` and `shallow.lock`; do not resume it. Use raw GitHub/API fetches from the fork.
+The old stalled partial clone at `C:\Users\claymi5433\ZineROM-a11q-src` is not the active workspace; do not use it. The active workspace is `Documents\Default Project\ZineROM-a11q-src`.
 
 ## 7. Next offline work
 
-1. **Ramdisk audit (next):** extract the stock A11 `boot.img` ramdisk and record the exact `/init` inode/path, the first-stage exec target, the ramdisk `file_contexts` entries, and the `zz_a115f_boot_fit` repack steps.
-2. **Write and review the wrapper and shim** against the ABI in `FIX_LEGACY_FSCRYPT.md`; do not build a ROM yet.
-3. **Add CI compile/host tests** without publishing.
-4. **Optional build reproduction:** reproduce `23f8998f…` in a clean environment and compare image hashes with `f51460ef…`. This validates provenance only, not bootability.
+1. **Unblock Actions workflow registration (next; user action):** the repository reports zero registered workflows despite a valid `build.yml` on the default branch; dispatch returns HTTP 404. Enable/register workflows in the GitHub UI or provide a `workflow`-scoped credential. Do not rewrite the default branch.
+2. **Dispatch the ROM build:** run `build.yml` on `manus/a115f-legacy-fscrypt`; inspect the unit-test step, then the mod's compile/host-test/`readelf` checks. Fix any failure before producing a ZIP.
+3. **Review the built system image statically** before any device test; record all hashes and logs.
+4. **Review the built system image statically** before any device test.
 5. **Keep the status docs current** in `PORTING_STATUS.md`, `ISSUE_REGISTER.md`, `NEXT_DEVICE_TEST.md`, and `FIX_LEGACY_FSCRYPT.md`.
+6. **Optional provenance check:** reproduce `23f8998f…` in a clean environment and compare image hashes with `f51460ef…`. This validates provenance only, not bootability.
 
 Do not change fstab, FBE policy, or add another Keymaster bridge based only on static speculation.
 
@@ -200,10 +216,20 @@ Failed to install fscrypt key to /data: Inappropriate ioctl for device
 Failed to open /data to install key
 Failed to evict fscrypt key
 Failed to get status for fscrypt key
-A115F_FSCRYPT_WRAPPER_ENTER
-A115F_FSCRYPT_WRAPPER_KEYRING_OK
-A115F_FSCRYPT_SHIM_ADD_OK
-A115F_FSCRYPT_SHIM_ADD_FAIL
+A115F_FSCRYPT_WRAPPER: ENTER
+A115F_FSCRYPT_WRAPPER: SESSION_OK <serial>
+A115F_FSCRYPT_WRAPPER: SESSION_FAIL <errno>
+A115F_FSCRYPT_WRAPPER: FSCRYPT_OK <serial>
+A115F_FSCRYPT_WRAPPER: FSCRYPT_FAIL <errno>
+A115F_FSCRYPT_WRAPPER: UEVENTD_PASSTHROUGH
+A115F_FSCRYPT_WRAPPER: EXEC /system/bin/init.real
+logcat tag A115F_FSCRYPT: SHIM_LOADED
+logcat tag A115F_FSCRYPT: ADD_OK
+logcat tag A115F_FSCRYPT: ADD_FAIL <errno>
+logcat tag A115F_FSCRYPT: REMOVE_OK
+logcat tag A115F_FSCRYPT: REMOVE_FAIL <errno>
+logcat tag A115F_FSCRYPT: STATUS_PRESENT
+logcat tag A115F_FSCRYPT: STATUS_ABSENT
 ```
 
 The exact vold/KeyStorage line selects the next code change. Do not edit fstab or add another Keymaster bridge before that line is known. In particular, the **first** `QSEECom_start_app failed` before `/vendor/firmware_mnt` mounts is expected; keep reading until the second `keymaster-4-0` start.
@@ -224,9 +250,9 @@ Branch tree for the current asset:
 
 - Do not claim the current asset can boot with a healthy KM4; the kernel/`vold`/`init` gap is unconditional.
 - Do not claim “Android 15 removed legacy fscrypt”; LineageOS 22.2/23.1 still contain it.
-- Do not replace `/system/bin/init`; `ueventd` is a symlink to it and runs under `ueventd` seclabel.
+- Do not install a `/system/bin/init` wrapper without preserving `argv[0]`, verifying the `ueventd` symlink, and labelling both `init` and `init.real` as `init_exec`.
 - Do not try to inject a session keyring into PID 1 from a helper; the kernel rejects it.
-- Do not rebuild or publish another ZIP before the wrapper/shim is reviewed and built.
+- Do not publish another ZIP before the compile/host-test CI is green and the ROM build is statically inspected.
 - Do not format `/data`, `/keydata`, or `/keyrefuge`.
 - Do not treat `K00R` or QSEE `0x72000206` as the root cause.
 - Do not treat `A115F_KEYMASTER_BARRIER_COMPLETE` as proof that KM4 is ready.
@@ -240,7 +266,9 @@ Branch tree for the current asset:
 
 - [ ] Read this file, `PORTING_STATUS.md`, `ISSUE_REGISTER.md`, and `FIX_LEGACY_FSCRYPT.md`.
 - [ ] Confirm the status repo is at the latest audit commit.
-- [ ] Continue with the ramdisk audit in section 7, item 1.
-- [ ] If the phone is available, run the one device test in section 8 and capture the full logs, including both `keymaster-4-0` starts and the vold fscrypt line.
+- [x] Source committed and pushed as `manus/a115f-legacy-fscrypt@48438e6`.
+- [ ] Unblock GitHub Actions workflow registration (ISSUE-027); dispatch `build.yml` and record the outcome.
+- [ ] Build only after CI is green, then inspect the built image before any device test.
+- [ ] If the phone is available, run the one device test in section 8 after verifying the recovery path and getting explicit approval; capture both `keymaster-4-0` starts, the vold fscrypt line, and the wrapper/shim markers.
 - [ ] Use the branch tree to pick exactly one next branch.
-- [ ] Do not build or publish a new ZIP until the wrapper/shim exists, compiles, and is reviewed.
+- [ ] Do not publish a new ZIP until a device reaches the framework.

@@ -4,7 +4,7 @@ Last updated: 2026-11-16
 
 This is the **only** device test that should be run next. It is a diagnostic run, not a proven fix. The current ZIP contains a Keymaster barrier and kmsg markers; the prior `enablefilecrypto` failure log most likely came from a build before that barrier. The barrier waits for Keystore2 registration, not for KM4, so a completed barrier is not proof that the FBE key path is healthy.
 
-**Updated 2026-11-16 — the current asset cannot succeed at FBE even with a healthy KM4.** The A11 4.9.227 kernel implements only legacy fscrypt key management, while donor `vold` is ioctl-only and donor `init` creates no keyring. Test this asset only to capture where the failure occurs; do not treat a successful boot as a possible outcome of this run. A fixed build is designed in `FIX_LEGACY_FSCRYPT.md` but has not been built.
+**Updated 2026-11-16 — the current asset cannot succeed at FBE even with a healthy KM4.** The A11 4.9.227 kernel implements only legacy fscrypt key management, while donor `vold` is ioctl-only and donor `init` creates no keyring. Test this asset only to capture where the failure occurs; do not treat a successful boot as a possible outcome of this run. The fix source is compiled locally and host-tested (`manus/a115f-legacy-fscrypt@48438e6`), but it has not been built into a ROM, so there is still no fixed ZIP to test.
 
 Two expectations to keep straight while reading the log:
 
@@ -126,7 +126,7 @@ grep -iE "keymaster-4-0|qseecom|QSEECom|android.hardware.keymaster@4.0" logcat-a
 grep -iE "fscrypt_initialize_systemwide_keys|No mount point entry for /data|Unable to parse encryption options|EncryptionOptions not initialized" logcat-all.txt dmesg.txt
 grep -iE "Failed to get ephemeral wrapped key|decryptWithKeystoreKey failed|decryptWithoutKeystore failed|encryptWithKeystoreKey failed|Version mismatch" logcat-all.txt dmesg.txt
 grep -iE "Failed to install fscrypt key|Failed to open /data to install key|Failed to evict fscrypt key|Failed to get status for fscrypt key|Inappropriate ioctl for device" logcat-all.txt dmesg.txt
-grep -iE "A115F_FSCRYPT_SHIM|A115F_FSCRYPT_WRAPPER|fscrypt.*keyring|Creating new key in|No key found in" logcat-all.txt dmesg.txt
+grep -iE "A115F_FSCRYPT|fscrypt.*keyring|Creating new key in|No key found in" logcat-all.txt dmesg.txt
 grep -iE "vold|keystore2|keymaster|linker|fscrypt" logcat-all.txt dmesg.txt
 ```
 
@@ -152,7 +152,7 @@ On Windows, use `findstr /i /c:"..."` or open the files in a text editor.
 | `Failed to install fscrypt key to /data: Inappropriate ioctl for device` | **Confirmed code-level root cause.** Donor `vold` issued `FS_IOC_ADD_ENCRYPTION_KEY`, and the A11 4.9 kernel returned `ENOTTY`. The current asset cannot install a key; the wrapper/shim fix is required. | No further diagnosis needed for this sub-step; build the fix from ISSUE-024/025. |
 | `Failed to open /data to install key` | `vold` could not open the mountpoint; the key install never reached the ioctl. | Check `/data` mount state and the fstab, but do not format. |
 | `Creating new key in` / `No key found in` with no `Failed to install fscrypt key` line | Key retrieval (KeyStorage/Keystore2/KM4) failed before installation. | The KM4/Keystore2 branch is the earlier blocker; fixing legacy fscrypt alone will not boot. |
-| `A115F_FSCRYPT_WRAPPER_*` or `A115F_FSCRYPT_SHIM_*` markers | Only present in a fixed build, not in `f51460ef…`. Their absence here is expected and is not evidence. | Use them only when testing the wrapper/shim build. |
+| `A115F_FSCRYPT_WRAPPER` kmsg lines or `A115F_FSCRYPT` logcat messages | Only present in a fixed build, not in `f51460ef…`. Their absence here is expected and is not evidence. | Use them only when testing the wrapper/shim build. |
 | `Version mismatch` | A key blob or policy version is incompatible. | Check FBE version and Keymaster key format. Samsung ODE is already excluded for this `/data` entry. |
 
 Do not treat `Keymaster device ready` alone as success: the A11 helper logs it even when `getSecurityLevel(TE)` failed, and then exits 0.
@@ -175,7 +175,7 @@ Do not send only “it didn’t boot.” The exact barrier/Keystore2/KM4/vold li
 
 - Do not flash a different ZIP or a “fixed” build yet.
 - Do not expect this asset to boot. It cannot install a legacy fscrypt key on the A11 4.9 kernel; a failed FBE attempt here does not by itself prove the KM4/Keystore2 path is broken.
-- Do not interpret the absence of `A115F_FSCRYPT_WRAPPER_*` or `A115F_FSCRYPT_SHIM_*` markers as a fault; those markers exist only in the planned fixed build.
+- Do not interpret the absence of `A115F_FSCRYPT_WRAPPER` kmsg lines or `A115F_FSCRYPT` logcat messages as a fault; those markers exist only in the planned fixed build.
 - Do not disable FBE, edit the fstab, or add another Keymaster bridge by guesswork.
 - Do not move the barrier into vendor `on post-fs-data`; system `installkey /data` runs before that trigger.
 - Do not treat `A115F_KEYMASTER_BARRIER_COMPLETE` as proof that KM4 is ready.
@@ -183,3 +183,39 @@ Do not send only “it didn’t boot.” The exact barrier/Keystore2/KM4/vold li
 - Do not rebuild from `manus/a115f-build-once` or `manus/a115f-bootability-preflight`; neither contains the barrier patcher.
 - Do not format `/data`, `/keydata`, or `/keyrefuge`.
 - Do not claim the port is fixed from this diagnostic run. It is only meant to identify the failing sub-step.
+
+## 9. Fixed-build test — only after the build exists and recovery is verified
+
+Do **not** use this section until a ZIP built from `manus/a115f-legacy-fscrypt@48438e6` (or a later inspected commit) exists, its system image has been statically inspected, and the stock restore path is verified. The fixed build does not modify the boot image; recovery means reflashing the previous port ZIP or the stock system image.
+
+Before flashing, record the ZIP SHA-256, the build log, and the SHA-256 of `/system/bin/init`, `/system/bin/init.real`, and `/system/lib64/liba115f_fscrypt_shim.so`.
+
+Expected fixed-build evidence, in order:
+
+```text
+A115F_FSCRYPT_WRAPPER: ENTER
+A115F_FSCRYPT_WRAPPER: SESSION_OK <serial>
+A115F_FSCRYPT_WRAPPER: FSCRYPT_OK <serial>
+A115F_FSCRYPT_WRAPPER: EXEC /system/bin/init.real
+A115F_FSCRYPT_WRAPPER: UEVENTD_PASSTHROUGH        (when ueventd starts)
+logcat tag A115F_FSCRYPT: SHIM_LOADED
+logcat tag A115F_FSCRYPT: ADD_OK
+logcat tag A115F_FSCRYPT: ADD_OK
+logcat tag A115F_FSCRYPT: ADD_OK
+```
+
+Interpretation:
+
+| Observation | Meaning | Next action |
+|---|---|---|
+| No `WRAPPER_ENTER` | The wrapper is not `/system/bin/init`, or first-stage init did not exec it. | Re-inspect the built system image; restore the previous ZIP. |
+| `SESSION_FAIL` / `FSCRYPT_FAIL` | A raw keyring syscall failed. | Check `CONFIG_KEYS`, seccomp, SELinux, and the kernel log; the shim fallback may still create the keyring. |
+| `FSCRYPT_OK` but no `SHIM_LOADED` | `LD_PRELOAD` was ignored or `vold.rc` was not patched. | Check `vold.rc`, linker namespace, and `AT_SECURE`. |
+| `SHIM_LOADED` but no `ADD_OK`/`ADD_FAIL` | vold did not reach `installKey()`, or the key install failed before the ioctl. | Read the preceding Keystore2/vold error; this is not necessarily the shim. |
+| `ADD_OK` ×3 but `/data` still fails | The keys were installed but `request_key()` cannot resolve them. | Check session keyring inheritance, keyring labels, AVC denials, and `CONFIG_KEYS`. |
+| `ADD_FAIL EACCES` | SELinux key permission or label mismatch. | Capture the AVC; do not add a blind rule. |
+| `ADD_FAIL ENOKEY` | The `fscrypt` keyring is missing and the fallback failed. | Check the wrapper markers and the shim constructor. |
+| No `UEVENTD_PASSTHROUGH` and ueventd fails | The symlink or `argv[0]` handling broke. | Restore the previous system image; do not unlink the symlink. |
+| `/data` mounts, zygote/system_server starts | The FBE blocker is cleared on this device. | Continue to the next boot stage; this is not a stability claim. |
+
+Do not format `/data` to force a pass. If the device boot-loops, restore the previous ZIP or stock system image and keep the full log.

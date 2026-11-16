@@ -52,13 +52,15 @@ The original M0-M9 milestones map to the five phases:
 
 ## 2. Current baseline (2026-11-16)
 
-- Source: `zinerom48-tech/ZineROM-a11q`, branch `manus/a115f-vendor-fingerprint` at `23f8998f0200969f5748e9eb012d1dc52037a054`. Upstream `nova-arch008/ZineROM-a11q` returns 404; the fork is public.
+- Source: `zinerom48-tech/ZineROM-a11q`. The barrier baseline is `manus/a115f-vendor-fingerprint` at `23f8998f0200969f5748e9eb012d1dc52037a054`; the legacy-fscrypt work is on `manus/a115f-legacy-fscrypt` at `48438e6` (12 added files, pushed). Upstream `nova-arch008/ZineROM-a11q` returns 404; the fork is public.
 - Status repo: `zinerom48-tech/ZineROM-A115F-OneUI7-port-status`, branch `audit/2026-11-03-keymaster-barrier` at `3fb26b8` (plus the current doc checkpoint). `main` remains at `1d2d0ad` and must stay untouched.
 - Current public asset: `f51460eff376466d24c12d39902e954e6037e5de22b3a7aef68088346f26fa95` (1,842,649,818 bytes), statically validated with 62 tests, **not boot-tested**.
 - Code-level root cause: **two-part legacy-fscrypt gap**.
   1. A11 4.9.227 kernel has no modern fscrypt key ioctls; donor `vold` is ioctl-only and has no legacy fallback.
   2. Donor `init` creates neither PID 1's session keyring nor the named `fscrypt` keyring.
-- Leading fix: pre-policy ramdisk `/init` wrapper plus a 64-bit vold `LD_PRELOAD` ioctl shim. Design complete in `FIX_LEGACY_FSCRYPT.md`; not implemented or built.
+- Leading fix: `/system/bin/init` wrapper (pre-policy keyring creation, `argv[0]` preserved, donor init moved to `init.real`) plus a 64-bit vold `LD_PRELOAD` ioctl shim. Source compiled locally with Zig 0.17.1/clang 22.1.8, host-tested, and pushed; ROM build and device test pending. Design in `FIX_LEGACY_FSCRYPT.md`.
+- Source branch `manus/a115f-legacy-fscrypt@48438e6` adds 12 files and is pushed. The standalone CI workflow is local-only (`local/a115f-legacy-fscrypt-ci-workflow@5551184`) because the credential lacks `workflow` scope. The repository currently has zero registered Actions workflows, so `build.yml` cannot be dispatched (ISSUE-027).
+- Local binaries: wrapper 2624-byte `ET_EXEC`, no `PT_INTERP`/`.dynamic`/`DT_NEEDED`; shim 6280-byte `ET_DYN`, 0 `DT_NEEDED`, imports only `__android_log_print`/`__errno`, exports `ioctl`; host tests pass.
 - No physical A11, no raw log linked to the exact ZIP SHA, no verified stock restore package, unknown bootloader/AVB state, no local Android toolchain. These block device and build work.
 - Readiness: **R0**.
 
@@ -69,7 +71,7 @@ The original M0-M9 milestones map to the five phases:
 | Phase | Objective | Exit gate | Current status |
 |---|---|---|---|
 | **1. Repository and hardware audit** | Establish what is known, what is assumed, and what needs a device | G1 | Complete for offline evidence; device items blocked |
-| **2. Port development** | Fix boot-critical gaps, then bring up hardware in dependency order | G2 | In progress: legacy-fscrypt design done; implementation next |
+| **2. Port development** | Fix boot-critical gaps, then bring up hardware in dependency order | G2 | In progress: legacy-fscrypt source implemented; compile/ROM build next |
 | **3. Automated QA** | Make every build and static claim reproducible and testable | G3 | Partial: prior 62 static tests; new host/CI tests queued |
 | **4. Bug investigation** | Convert device failures into minimal, evidence-backed fixes | G4 | Blocked on device |
 | **5. Build, delivery, report** | Produce a candidate, verify recovery, publish only with approval, report honestly | G5 | Blocked on build/device/approval |
@@ -126,11 +128,11 @@ Do not spend time on optional apps, theming, or feature parity while step 1 or 2
 
 | ID | Task | Priority | Status | Depends on | Next action |
 |---|---|---|---|---|---|
-| P2.1 | Legacy-fscrypt fix design (wrapper + shim + boot patcher) | S1 | **Done (design)** | P1.3/P1.4 | Implement in P2.2. |
-| P2.2 | Implement `init_wrapper.c`, shim, syscall helpers, boot patcher, mod, CI compile | S1 | **Queued (next)** | P2.1 | Create branch from `23f8998f…`; write source and tests. |
-| P2.3 | Add host unit tests and static binary checks | S1 | **Queued** | P2.2 | Struct offsets, names, payload, probe, ENOTTY-only. |
-| P2.4 | Build a candidate on the new branch; record hash; do not publish | S1 | **Queued** | P2.2/P2.3 | Run CI, capture build log and artifact SHA. |
-| P2.5 | Preflight-verify stock A11 `boot.img` layout (`/init`, compression, header) | S1 | **Queued** | P2.2 | Fail closed if layout differs. |
+| P2.1 | Legacy-fscrypt fix design (wrapper + shim + system-image mod) | S1 | **Done (design)** | P1.3/P1.4 | Design reflected in `FIX_LEGACY_FSCRYPT.md`. |
+| P2.2 | Implement `init_wrapper.c`, shim, syscall helpers, mod, CI compile | S1 | **Done (source, pushed)** | P2.1 | 12 files pushed at `48438e6`; the standalone CI workflow is local-only. |
+| P2.3 | Add host unit tests and static binary checks | S1 | **Done locally; CI blocked** | P2.2 | Host tests pass and `readelf` checks pass with Zig 0.17.1; run in `build.yml` once Actions registration is fixed. |
+| P2.4 | Build a candidate on the new branch; record hash; do not publish | S1 | **Blocked (CI registration)** | P2.2/P2.3 | Unblock ISSUE-027, dispatch `build.yml`, capture build log and artifact SHA. |
+| P2.5 | Preflight-verify donor `system/bin/init` and `ueventd` layout | S1 | **Implemented in mod; ROM build pending** | P2.2 | Fail closed if `init` is not a regular ELF64 or `ueventd` does not resolve to `init`. |
 | P2.6 | Device boot to framework/lockscreen (M5/M6) | S1 | **Blocked** | P2.4, P2.5, device, approval | Capture one SHA-linked log. |
 | P2.7 | Verify `/data` FBE across reboot; Setup Wizard (M7) | S1 | **Blocked** | P2.6 | Test fresh and existing `/data` separately. |
 | P2.8 | Display/touch bring-up | S1 | **Blocked** | P2.6 | Compare panel/DTB/vendor display HAL. |
@@ -167,20 +169,20 @@ Do not spend time on optional apps, theming, or feature parity while step 1 or 2
 | ID | Task | Status | Notes |
 |---|---|---|---|
 | QA1 | Static validators (ZIP, fingerprint, boot chain, vendor ABI, partition layout) | **Partial** | Existing 62 tests; not re-run this session. |
-| QA2 | Host unit tests for the ioctl decoder and wrapper keyring logic | **Queued** | See `FIX_LEGACY_FSCRYPT.md` §8.1. |
-| QA3 | CI compile step for wrapper/shim with AArch64 static/shared checks | **Queued** | Add before `Build ROM`; do not touch `publish-public.yml`. |
-| QA4 | Image/package checks: boot ramdisk contains `init` + `init.real`; `vold.rc` contains `setenv`; shim present and labelled | **Queued** | Fail the build if any check fails. |
+| QA2 | Host unit tests for the ioctl decoder and wrapper keyring logic | **Implemented; host tests pass** | `tests/test_legacy.c`; see `FIX_LEGACY_FSCRYPT.md` §8.1. |
+| QA3 | CI compile step for wrapper/shim with AArch64 static/shared checks | **Implemented; CI blocked** | The standalone workflow is local-only; the same checks run in `zz_a115f_legacy_fscrypt/customize.sh`. Do not touch `publish-public.yml`. |
+| QA4 | System-image checks: `system/bin/init` is the wrapper, `init.real` is the donor init, `ueventd` resolves to `init`, `vold.rc` has `setenv`, shim present and labelled | **Implemented in mod; ROM build pending** | Fail the build if any check fails. |
 | QA5 | Device log parser for `A115F_FSCRYPT_*`, `Failed to install fscrypt key`, AVC denials | **Queued** | Produce a pass/fail/branch summary. |
 | QA6 | Regression matrix for FBE fresh/existing `/data`, reboot, and recovery | **Queued** | Blocked on device for execution. |
-| QA7 | Pin or hash the `magiskboot` version used by `external/make.sh` | **Queued (hardening)** | Current build downloads "latest"; record risk R10. |
+| QA7 | Pin or hash the `magiskboot` version used by `external/make.sh` | **Obsolete for this fix** | The legacy-fscrypt fix no longer modifies the boot image; keep the hardening note for other boot work. |
 
 ### 6.3 Gate G3
 
 - CI is green on the candidate branch.
 - All host/static tests pass; no S1 static finding is open.
-- The ZIP hash, boot image hash, wrapper hash, and shim hash are recorded.
+- The ZIP hash, wrapper hash, `init.real` hash, and shim hash are recorded.
 - The package validates without installing.
-- The build fails closed on any missing boot/ramdisk/vold layout.
+- The build fails closed on any missing `system/bin/init`, `ueventd` symlink, `vold.rc`, or shim layout.
 
 **Status: not met.**
 
@@ -258,21 +260,20 @@ For every device failure:
 
 | Order | ID | Action | Owner | Status |
 |---|---|---|---|---|
-| 1 | P2.2 | Create branch from `23f8998f…`; implement wrapper, shim, syscall helpers | Agent | Queued |
-| 2 | P2.2 | Implement `zz_a115f_legacy_fscrypt` mod + boot patcher + `vold.rc` patch + metadata | Agent | Queued |
-| 3 | P2.3 | Add host tests and static binary checks | Agent | Queued |
-| 4 | QA3/QA4 | Add CI compile step and image/package checks | Agent | Queued |
-| 5 | P2.5 | Preflight the stock boot image layout; fail closed | Agent | Queued |
-| 6 | P2.4 | Build candidate; record hashes; do not publish | Agent | Queued |
-| 7 | — | Update docs and issue register with build/static results | Agent | Queued |
-| 8 | P1.8 | Obtain exact CSC/firmware, unlock/AVB state, restore package | User | Blocked |
-| 9 | P5.3 | Obtain explicit approval to install | User | Blocked |
-| 10 | P2.6 | Device boot + one SHA-linked log | User/Agent | Blocked |
-| 11 | P2.7 | Verify FBE across reboot + Setup Wizard | User/Agent | Blocked |
-| 12 | P2.8-P2.15 | Hardware bring-up in dependency order | User/Agent | Blocked |
-| 13 | P4.5 | Stability/regression soak | User/Agent | Blocked |
-| 14 | P5.5 | Publish only after approval and device evidence | User | Blocked |
-| 15 | P5.6 | Final report | Agent | Queued |
+| 1 | P2.2 | Commit and push the 12-file legacy-fscrypt source without altering the donor tree | Agent | **Done** (`48438e6`) |
+| 2 | P2.3 | Compile locally, run host tests and ELF/symbol checks | Agent | **Done** |
+| 3 | P2.4a | Unblock GitHub Actions workflow registration (repository currently reports zero workflows) | User | **Blocked** (ISSUE-027) |
+| 4 | P2.4b | Dispatch `build.yml`; build candidate; record hashes; do not publish | Agent | Queued (waiting on P2.4a) |
+| 5 | P2.5 | Inspect the built system image (`init`, `init.real`, `ueventd`, `vold.rc`, shim metadata) | Agent | Queued (waiting on P2.4b) |
+| 6 | — | Update docs and issue register with build/static results | Agent | **Done** (this checkpoint) |
+| 7 | P1.8 | Obtain exact CSC/firmware, unlock/AVB state, restore package | User | Blocked |
+| 8 | P5.3 | Obtain explicit approval to install | User | Blocked |
+| 9 | P2.6 | Device boot + one SHA-linked log | User/Agent | Blocked |
+| 10 | P2.7 | Verify FBE across reboot + Setup Wizard | User/Agent | Blocked |
+| 11 | P2.8-P2.15 | Hardware bring-up in dependency order | User/Agent | Blocked |
+| 12 | P4.5 | Stability/regression soak | User/Agent | Blocked |
+| 13 | P5.5 | Publish only after approval and device evidence | User | Blocked |
+| 14 | P5.6 | Final report | Agent | Queued |
 
 ---
 
@@ -295,12 +296,12 @@ For every device failure:
 |---|---|---|---|
 | R1 | No physical A11 | Cannot verify boot/hardware | Keep R0; do not claim success; prepare device-test package. |
 | R2 | No verified stock restore package/CSC | Brick/data-loss risk | Block installation until P1.8 is complete. |
-| R3 | Boot image layout differs from the assumption | Build fails or dead boot | Preflight check; fail closed; reflash stock boot. |
+| R3 | Donor `system/bin/init` layout differs or `ueventd` is not a symlink | Build fails or ueventd breaks | Mod verifies both and fails closed; restore previous system image. |
 | R4 | `LD_PRELOAD` ignored or shim not loaded | FBE still fails | Marker check; fallback vold wrapper only after evidence. |
 | R5 | SELinux denial on keyring operations | FBE fails | Capture AVC; targeted rule only with evidence. |
 | R6 | Keymaster/Keystore2 fails earlier than key installation | Fix insufficient | Separate ISSUE-019/020/021; capture key retrieval lines. |
 | R7 | Existing `/data` key mismatch | Cannot decrypt user data | Document; format only with explicit approval. |
-| R8 | Unpinned `magiskboot` / CI network dependency | Non-reproducible build | Record version/hash; pin in QA7. |
+| R8 | CI network/toolchain dependency | Non-reproducible build | Record tool versions and artifact hashes; pin where practical. |
 | R9 | Donor system incompatibility beyond FBE | Later boot/hardware failures | Phase 2/4 hardware matrix; do not declare victory at FBE. |
 | R10 | Release asset unavailable upstream | Cannot re-download the 1.84 GB ZIP | Preserve local hashes; do not rely on the 404 upstream. |
 
@@ -320,19 +321,21 @@ For every device failure:
 
 ## 13. Immediate next actions
 
-1. Create a new source branch from `23f8998f0200969f5748e9eb012d1dc52037a054`; do not touch `main`.
-2. Implement `prebuilts/a115f_legacy_fscrypt/` (wrapper, shim, syscall helpers, build script, tests).
-3. Implement `unica/mods/zz_a115f_legacy_fscrypt/` (boot patcher, shim copy, metadata, `vold.rc` patch, fail-closed checks).
-4. Add the CI compile step and image/package checks.
-5. Preflight the stock A11 `boot.img`: `/init` present, ramdisk compression/header, `vendor_boot` absent.
-6. Build the candidate; record the ZIP, boot image, wrapper, and shim hashes; do not publish.
-7. Update `PORTING_STATUS.md`, `ISSUE_REGISTER.md`, `RESUME.md`, and `NEXT_DEVICE_TEST.md` with the build results.
-8. Request from the user: exact CSC/firmware, bootloader/AVB state, verified stock restore package, and explicit approval before any flash.
-9. When a device is available: capture one full SHA-linked log and triage the earliest confirmed failure.
-10. Keep readiness R0 until a device reaches the framework.
+1. **Unblock GitHub Actions workflow registration (user action).** The repository reports zero registered workflows: dispatch returns HTTP 404 and `GET /actions/workflows` returns `total_count: 0`, although `build.yml` exists on `oneui7-a11q-boot`, Actions is enabled, and the token has `repo` scope. Enable/register workflows in the GitHub UI or supply a `workflow`-scoped credential. Do not rewrite the default branch.
+2. **Dispatch `build.yml` on `manus/a115f-legacy-fscrypt`.** Watch the unit-test step, then the mod's compile/host-test/`readelf` checks; fix failures before producing a ZIP.
+3. **Build and record.** Record the ZIP, wrapper, `init.real`, and shim SHA-256; do not publish.
+4. **Inspect the built system image:** `system/bin/init` wrapper, `system/bin/init.real` donor init, `ueventd` symlink, one `setenv LD_PRELOAD`, shim label/presence.
+5. **Do not device-test** until the exact CSC/firmware, unlock/AVB state, stock restore package, and explicit approval exist; then capture one SHA-linked log and do not format `/data`.
+6. **Keep the docs current** with build results and any CI failure output.
+7. **Request from the user:** exact CSC/firmware, bootloader/AVB state, verified stock restore package, and explicit approval before any flash.
+8. **When a device is available:** capture one full SHA-linked log and triage the earliest confirmed failure.
+9. Keep readiness R0 until a device reaches the framework.
 
 ---
 
 ## 14. Change log
 
 - 2026-11-16: Initial Phase 1-5 plan. Records the two-part FBE root cause, the wrapper/shim design gate, the persistent task queue, G0-G5 gates, program risks, and the evidence rules. No build, flash, format, or new ZIP. R0.
+- 2026-11-16 (design change): Wrapper moved from the boot ramdisk `/init` to `/system/bin/init`; donor init becomes `/system/bin/init.real`, both labelled `init_exec`. `argv[0]` is preserved for the `ueventd` symlink. Boot image and `magiskboot` are no longer part of this fix. Source and CI workflow exist; compile, ROM build, and device test are still pending. R0.
+- 2026-11-16 (local build): Compiled the wrapper and shim with Zig 0.17.1/clang 22.1.8 + lld using the project flags, no warnings. Wrapper `ET_EXEC`, 2624 bytes, entry `0x1010848`, no `PT_INTERP`/`.dynamic`, 0 `DT_NEEDED`; shim `ET_DYN`, 6280 bytes, 0 `DT_NEEDED`, imports exactly `__android_log_print __errno`, exports `ioctl`, no memory exports. Host tests initially crashed with `0xC0000005` because `a115f_keyctl_fn` used 32-bit `unsigned long` on Windows LLP64; switching to `uintptr_t` fixed the host tests and left the aarch64 binaries byte-identical. Commits `325dcd2` (12 files) and `48438e6` (ABI fix) pushed. R0; no ROM build or device test.
+- 2026-11-16 (CI blocker): `build.yml` dispatch returns HTTP 404 and the repository lists zero workflows, although the default branch `oneui7-a11q-boot` contains `build.yml`, Actions is enabled, and the token has `repo` scope. Requires user action to register workflows or a `workflow`-scoped credential (ISSUE-027). Do not rewrite the default branch. R0.

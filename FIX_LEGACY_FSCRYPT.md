@@ -1,6 +1,6 @@
 # Fix Design — Legacy fscrypt for the A115F One UI 7 Port
 
-Status: **design complete, not implemented, not built, not device-tested**. Readiness remains **R0**.
+Status: **implemented in source, not compiled, not ROM-built, not device-tested**. Readiness remains **R0**.
 Last updated: 2026-11-16.
 Scope: make `/data` file-based encryption (FBE v1) succeed on the Galaxy A11 (`SM-A115F`, `a11q`) with the A05s One UI 7 donor system.
 
@@ -33,7 +33,7 @@ Both gaps must be fixed. A vold-only fix fails with `Unable to find device keyri
 | F7 | Donor `init` has no keyctl/keyring strings or dynsyms, no `libkeyutils.so` DT_NEEDED, and no `svc` instruction in the full `SecondStageMain` (`0x155DFC`, size `0x5574`). | `donor_init` strings/dynsyms/disassembly. |
 | F8 | AOSP 12 `SecondStageMain` line 768 creates the session keyring: `keyctl_get_keyring_ID(KEY_SPEC_SESSION_KEYRING, 1)`. `FscryptInstallKeyring()` creates the named `fscrypt` keyring with `add_key("keyring", "fscrypt", 0, 0, KEY_SPEC_SESSION_KEYRING)` when `mount_all` reports `FS_MGR_MNTALL_DEV_FILE_ENCRYPTED`. | `a12_init2.cpp:765-768`; `fscrypt_init_extensions.cpp:44-57`; `builtins.cpp:625-648`. |
 | F9 | LineageOS 22.2 and 23.1 still contain `isFsKeyringSupported`, `installKeyLegacy`, and `evictKeyLegacy`. The removal is Samsung-specific, not an Android 15 change. | `keyutil14.cpp`; AOSP/Lineage source. |
-| F10 | `/system/bin/ueventd` is a build symlink to `init`; `service ueventd` uses `seclabel u:r:ueventd:s0`. Replacing `/system/bin/init` is unsafe. | `init/Android.bp` symlinks; A11/donor rc. |
+| F10 | `/system/bin/ueventd` is a build symlink to `init`; `service ueventd` uses `seclabel u:r:ueventd:s0`. Any replacement of `/system/bin/init` must preserve `argv[0]` so the real init still enters ueventd mode, and the mod must verify the symlink target before installing the wrapper. | `init/Android.bp` symlinks; A11/donor rc; wrapper `argv[0]` check. |
 | F11 | A helper cannot inject a keyring into PID 1: `keyctl_session_to_parent()` rejects `parent->pid <= 1`. PID 1 must create the keyrings itself. | Kernel `security/keys/process_keys.c`. |
 | F12 | The A11 4.9 key permission model uses **possession bits additively**, and possession propagates through nested keyring search. Default key permissions are `KEY_POS_VIEW|KEY_POS_SEARCH|KEY_POS_LINK|KEY_POS_SETATTR|KEY_USR_VIEW`, plus `KEY_POS_READ` and `KEY_POS_WRITE` for keyrings. No `KEY_OTH_SEARCH` is needed. | `k49_key.c:889-900`; `k49_perm.c:30-77`; `k49_keyring.c:866-873`; `k49_process_keys.c:223-252`. |
 | F13 | The A11 platform policy grants `domain` search on `init`, `vold`, and `kernel`; `init` and `vold` write/search/setattr on their own keyrings. The A11 vendor policy (`VE=SEPF_SM-A115F_12_0001`) adds `(allow vold_31_0 kernel_31_0 (key (write search)))`, `(allow domain kernel_31_0 (key (search)))`, and `(allow init_31_0 kernel_31_0 (key (search)))`. | `plat_sepolicy.cil`, `plat_pub_versioned.cil`, `vendor_sepolicy.cil`. |
@@ -41,9 +41,9 @@ Both gaps must be fixed. A vold-only fix fails with `Unable to find device keyri
 | F15 | The legacy payload is `struct fscrypt_key { u32 mode; u8 raw[64]; u32 size; }`, 72 bytes, with `mode=0`, `raw` = 64-byte key, `size=64`. | AOSP `fillKey` (`keyutil12.cpp:121-131`); kernel `fscrypt` payload checks. |
 | F16 | The shim's exact UAPI layouts are: `fscrypt_key_specifier` 40 bytes (type at 0, `u.descriptor[8]` at 8); `fscrypt_add_key_arg` header 80 bytes (`raw_size` at 40, `key_id` at 44, `__flags` at 76, `raw` at 80); `fscrypt_remove_key_arg` 64 bytes (`removal_status_flags` at 40); `fscrypt_get_key_status_arg` 128 bytes (`status` at 64, `status_flags` at 68, `user_count` at 72). | `android15_fscrypt_uapi.h:63-106`; ioctl sizes `0x50`/`0x40`/`0x80`. |
 | F17 | The ADD/REMOVE/GET_STATUS call sites use the imported `ioctl` through a normal PLT entry, so `LD_PRELOAD` interposition is viable. | F4/F5. |
-| F18 | `create_work_dir.sh` copies and unsigns the stock A11 `boot.img`; `build_flashable_zip.sh` copies `$WORK_DIR/kernel/*.img` unchanged. There is no existing boot repack step. `change_fs_type.sh` proves the unpack/repack flow. | Build scripts; checkpoint. |
+| F18 | `create_work_dir.sh` copies and unsigns the stock A11 `boot.img`; `build_flashable_zip.sh` copies `$WORK_DIR/kernel/*.img` unchanged. This fix does not modify the boot image. | Build scripts; checkpoint. |
 | F19 | The final ZIP builds each partition image with `file_context-$PARTITION` and `fs_config-$PARTITION`; new files need `SET_METADATA`. | `build_flashable_zip.sh:655-663`; `SET_METADATA()` at `common_utils.sh:538`. |
-| F20 | `magiskboot` is downloaded as the **latest** Magisk release by `external/make.sh`; its version is not pinned. CI compiles with Ubuntu 24.04 clang/lld. | `external_make.sh:249-268`; `build.yml:74-80`. |
+| F20 | `magiskboot` is downloaded as the **latest** Magisk release by `external/make.sh`; its version is not pinned. This fix no longer uses it. CI compiles with Ubuntu 24.04 clang/lld. | `external_make.sh:249-268`; `build.yml:74-80`; `zz_a115f_legacy_fscrypt/customize.sh`. |
 
 Facts F12-F14 close the earlier keyring-permission and descriptor-format questions. They do **not** prove runtime behavior on the device.
 
@@ -55,23 +55,27 @@ Two components, both required:
 
 ```
 kernel
-  └─ exec /init                         (new static arm64 wrapper, pre-policy)
-       ├─ keyctl(GET_KEYRING_ID, SESSION, create=1)
-       ├─ keyctl(SEARCH, SESSION, keyring, "fscrypt")
-       ├─ add_key("keyring", "fscrypt", NULL, 0, SESSION)   (if absent)
-       └─ execve("/init.real", argv, envp)
-            └─ real A11 first-stage init
-                 └─ exec /system/bin/init second_stage       (donor init, unchanged)
-                      └─ service vold  (LD_PRELOAD=liba115f_fscrypt_shim.so)
-                           └─ ioctl(ADD/REMOVE/GET_STATUS)
-                                └─ shim: real ioctl first; on ENOTTY translate to
-                                   add_key/keyctl legacy logon keys
+  └─ stock A11 /init                    (boot ramdisk, unchanged)
+       └─ first stage mounts /system
+            └─ exec /system/bin/init selinux_setup
+                 └─ new static arm64 wrapper (pre-policy, still PID 1)
+                      ├─ keyctl(GET_KEYRING_ID, SESSION, create=1)
+                      ├─ keyctl(SEARCH, SESSION, keyring, "fscrypt")
+                      ├─ add_key("keyring", "fscrypt", NULL, 0, SESSION)   (if absent)
+                      └─ execve("/system/bin/init.real", argv, envp)
+                           └─ donor init: selinux_setup -> second_stage
+                                └─ service vold (LD_PRELOAD=liba115f_fscrypt_shim.so)
+                                     └─ ioctl(ADD/REMOVE/GET_STATUS)
+                                          └─ shim: real ioctl first; on ENOTTY translate to
+                                             add_key/keyctl legacy logon keys
 ```
 
-Why a ramdisk wrapper instead of changes to `/system`:
-- The session keyring must belong to PID 1 before any service or app forks.
-- The wrapper runs before SELinux policy load, so its keyring creation is not subject to a domain transition and the keyrings are labelled `kernel` (the label the A11 vendor policy already allows).
-- `/system/bin/init` must not be replaced because `/system/bin/ueventd` is a symlink to it and runs under `u:r:ueventd:s0`.
+Why a `/system/bin/init` wrapper instead of a ramdisk wrapper:
+- AOSP 12 `FirstStageMain` execs `/system/bin/init` with `{"init", "selinux_setup"}` before loading SELinux policy (`first_stage22.cpp:559-565`). Replacing that file therefore runs our code in PID 1, pre-policy, exactly where the keyrings must be created.
+- The stock A11 boot image is not unpacked, repacked, or re-signed, so the unverified ramdisk layout, compression, header version, and AVB state are no longer risks. `magiskboot` is not used.
+- The donor `/system/bin/init` is a regular ELF64 AArch64 binary (confirmed), not a symlink.
+- `/system/bin/ueventd` is a symlink to `init`. The wrapper preserves `argv[0]` and skips keyring setup when invoked as `ueventd`, then execs `init.real`; the real init's basename-based ueventd mode is preserved. The service's `seclabel u:r:ueventd:s0` still applies.
+- The donor init is re-exec'd as `/system/bin/init second_stage` after policy load, so the wrapper runs a second time. The keyrings already exist; creation is idempotent. Both `/system/bin/init` and `/system/bin/init.real` must therefore be labelled `u:object_r:init_exec:s0`, because this second exec happens post-policy.
 
 Why a vold shim instead of replacing vold:
 - Donor `vold` is a large, Samsung-patched binary; rebuilding it is not practical.
@@ -80,20 +84,21 @@ Why a vold shim instead of replacing vold:
 
 ---
 
-## 4. Part A — ramdisk `/init` wrapper
+## 4. Part A — `/system/bin/init` wrapper
 
 ### 4.1 Behavior
 
-The wrapper is a freestanding, statically linked AArch64 executable. It performs only these operations, then execs the real first-stage init:
+The wrapper is a freestanding, statically linked AArch64 executable installed as `/system/bin/init`; the donor binary moves to `/system/bin/init.real`. It performs only these operations, then execs the real init with the original `argv` and `envp`:
 
-1. Create PID 1's session keyring:
+1. If `argv[0]`'s basename is `ueventd`, log `UEVENTD_PASSTHROUGH` and exec immediately. Do not create keyrings in a ueventd process.
+2. Create PID 1's session keyring:
    `keyctl(KEYCTL_GET_KEYRING_ID, KEY_SPEC_SESSION_KEYRING, 1)`.
-2. Look up the named `fscrypt` keyring:
+3. Look up the named `fscrypt` keyring:
    `keyctl(KEYCTL_SEARCH, KEY_SPEC_SESSION_KEYRING, "keyring", "fscrypt", 0)`.
-3. If absent, create it:
+4. If absent, create it:
    `add_key("keyring", "fscrypt", NULL, 0, KEY_SPEC_SESSION_KEYRING)`.
-4. Log one marker per result to `/dev/kmsg`.
-5. `execve("/init.real", argv, envp)`.
+5. Log one marker per result to `/dev/kmsg`.
+6. `execve("/system/bin/init.real", argv, envp)`.
 
 The wrapper must **never block boot**. If a keyring operation fails, it logs the error and still execs the real init. The shim creates the `fscrypt` keyring as a fallback if it is missing.
 
@@ -142,19 +147,20 @@ If the node or open fails, it writes to fd 1 as a last resort. The `<6>` prefix 
 Exact markers:
 
 ```
-A115F_FSCRYPT_WRAPPER_ENTER
+A115F_FSCRYPT_WRAPPER_ENTER <argv0>
 A115F_FSCRYPT_WRAPPER_SESSION_OK <serial>
 A115F_FSCRYPT_WRAPPER_SESSION_FAIL <errno>
 A115F_FSCRYPT_WRAPPER_FSCRYPT_OK <serial>
 A115F_FSCRYPT_WRAPPER_FSCRYPT_FAIL <errno>
-A115F_FSCRYPT_WRAPPER_EXEC /init.real
+A115F_FSCRYPT_WRAPPER_UEVENTD_PASSTHROUGH
+A115F_FSCRYPT_WRAPPER_EXEC /system/bin/init.real
 A115F_FSCRYPT_WRAPPER_EXEC_FAIL <errno>
 ```
 
 ### 4.4 Failure behavior
 
 - Keyring failure: log, continue to exec. A missing keyring produces a diagnosable shim failure rather than a dead boot.
-- `execve` failure: log `EXEC_FAIL`, then halt in a `wfi` loop. Do **not** reboot automatically; a boot loop destroys the evidence and may trigger Rescue Party. The only recovery is reflashing the stock `boot.img` (see §11).
+- `execve` failure: log `EXEC_FAIL`, then halt in a `wfi` loop. Do **not** reboot automatically; a boot loop destroys the evidence and may trigger Rescue Party. The only recovery is reflashing the stock system image or the last known-good port ZIP (see §11).
 
 ### 4.5 Compilation
 
@@ -167,7 +173,7 @@ clang --target=aarch64-linux-gnu -nostdlib -static -no-pie \
   -o init_wrapper init_wrapper.c
 ```
 
-The source must provide `_start`, `memset`, `memcpy`, and the raw syscall stubs. Do not link `libc`, `libdl`, or `libkeyutils`. Verify:
+The source must provide `_start` (a naked assembly stub that passes the kernel `sp` to C), `memset`, `memcpy`, and the raw syscall stubs. Do not link `libc`, `libdl`, or `libkeyutils`. Verify:
 
 ```
 file init_wrapper            # ELF 64-bit LSB executable, ARM aarch64, statically linked
@@ -179,19 +185,18 @@ readelf -d init_wrapper      # no DT_NEEDED
 
 ### 4.6 Packaging
 
-The wrapper replaces `/init` in the **boot image ramdisk**, not in `/system`:
+The wrapper and the shim live in the **system image**. The boot image is not modified:
 
-1. `cp -a "$WORK_DIR/kernel/boot.img" "$TMP/boot.img"`.
-2. `magiskboot unpack -h "$TMP/boot.img"`.
-3. Require `ramdisk.cpio` and `magiskboot cpio ramdisk.cpio "exists init"`.
-4. Refuse to proceed if `init.real` already exists (idempotence guard).
-5. `magiskboot cpio ramdisk.cpio "mv init init.real"`.
-6. `magiskboot cpio ramdisk.cpio "add 0750 init <compiled wrapper>"`.
-7. Verify both entries exist.
-8. `magiskboot repack "$TMP/boot.img" "$TMP/boot_new.img"`.
-9. Replace `$WORK_DIR/kernel/boot.img` only after every step succeeds.
+1. Require `$WORK_DIR/system/system/bin/init` to be a regular ELF64 AArch64 file; fail if it is missing, a symlink, or the wrong architecture.
+2. Require `$WORK_DIR/system/system/bin/ueventd` to be a symlink whose target is `init` or `./init`; the wrapper's ueventd passthrough depends on it.
+3. Refuse to proceed if `init.real` already exists (idempotence guard).
+4. `mv init init.real`, install the compiled wrapper as `init`, mode 0750, uid/gid 0.
+5. `SET_METADATA "system" "system/bin/init" 0 0 0750 "u:object_r:init_exec:s0"`.
+6. `SET_METADATA "system" "system/bin/init.real" 0 0 0750 "u:object_r:init_exec:s0"`.
+7. Install the shim at `$WORK_DIR/system/system/lib64/liba115f_fscrypt_shim.so`, mode 0644, and label it `u:object_r:system_lib_file:s0`.
+8. Patch `$WORK_DIR/system/system/etc/init/vold.rc` with the `LD_PRELOAD` line.
 
-If `vendor_boot.img` exists, the mod must **fail the build** with a clear message: the first-stage ramdisk location and `/init` path have not been verified for that layout. Do not guess.
+Do not touch `$WORK_DIR/kernel/boot.img`; do not require `magiskboot`. If a future layout moves system init into the ramdisk, this design must be re-evaluated rather than guessed.
 
 ---
 
@@ -326,18 +331,34 @@ where `<hex8>` is the 16-character lowercase hex of `key_spec.u.descriptor[0..7]
 
 ### 5.4 Logging
 
-Write to fd 2 (init redirects service stderr to kmsg by default) or `/dev/kmsg`:
+The shim logs to logcat with `__android_log_print(A115F_ANDROID_LOG_INFO, "A115F_FSCRYPT", …)`. Emit one message per distinct result:
 
 ```
-A115F_FSCRYPT_SHIM_LOADED
-A115F_FSCRYPT_SHIM_ADD_PROBE_ENOTTY
-A115F_FSCRYPT_SHIM_ADD_OK <name>
-A115F_FSCRYPT_SHIM_ADD_FAIL <errno>
-A115F_FSCRYPT_SHIM_REMOVE_OK
-A115F_FSCRYPT_SHIM_REMOVE_FAIL <errno>
-A115F_FSCRYPT_SHIM_STATUS_PRESENT
-A115F_FSCRYPT_SHIM_STATUS_ABSENT
-A115F_FSCRYPT_SHIM_UNEXPECTED <request>
+SHIM_LOADED
+ADD_PROBE_ENOTTY
+ADD_UNSUPPORTED <errno>
+ADD_OK
+ADD_FAIL <errno>
+REMOVE_UNSUPPORTED <errno>
+REMOVE_OK
+REMOVE_FAIL <errno>
+STATUS_UNSUPPORTED <errno>
+STATUS_PRESENT
+STATUS_ABSENT
+STATUS_FAIL <errno>
+```
+
+The wrapper writes to `/dev/kmsg` (falling back to `/dev/console`, then fd 2) with prefix `A115F_FSCRYPT_WRAPPER: `:
+
+```
+A115F_FSCRYPT_WRAPPER: ENTER
+A115F_FSCRYPT_WRAPPER: SESSION_OK <serial>
+A115F_FSCRYPT_WRAPPER: SESSION_FAIL <errno>
+A115F_FSCRYPT_WRAPPER: FSCRYPT_OK <serial>
+A115F_FSCRYPT_WRAPPER: FSCRYPT_FAIL <errno>
+A115F_FSCRYPT_WRAPPER: UEVENTD_PASSTHROUGH
+A115F_FSCRYPT_WRAPPER: EXEC /system/bin/init.real
+A115F_FSCRYPT_WRAPPER: EXEC_FAIL <errno>
 ```
 
 ### 5.5 Compilation
@@ -351,7 +372,7 @@ clang --target=aarch64-linux-gnu -shared -fPIC -nostdlib \
 
 The shim declares `extern int *__errno(void);` and sets `*__errno() = err` on failure. Bionic exports `__errno`; vold already links libc. Do not link `libdl` or `libkeyutils`.
 
-A constructor writes `A115F_FSCRYPT_SHIM_LOADED` and performs a fallback keyring check:
+A constructor logs `SHIM_LOADED`; keyring fallback creation happens lazily inside `a115f_legacy_install()` when the `fscrypt` keyring search fails with `ENOKEY`:
 
 ```c
 __attribute__((constructor)) static void shim_init(void) { ... }
@@ -395,17 +416,17 @@ If `LD_PRELOAD` is ignored (no `SHIM_LOADED` marker), the fallback is a `/system
 
 | Object | Created by | Label |
 |---|---|---|
-| PID 1 session keyring | wrapper, before policy load | `kernel` |
-| Named `fscrypt` keyring | wrapper, before policy load | `kernel` |
+| PID 1 session keyring | wrapper, pre-policy | `kernel` (initial SID) |
+| Named `fscrypt` keyring | wrapper, pre-policy | `kernel` (initial SID) |
 | Logon keys `ext4:`/`f2fs:`/`fscrypt:` | vold (shim), after policy load | `vold` |
 
-If the shim creates the `fscrypt` keyring as a fallback, that keyring is labelled `vold`; the rules below cover both cases.
+If the policy is already loaded before the wrapper runs (not expected: `selinux_setup` is the policy loader), the keyrings would be labelled `init`, but the platform rule grants `write search setattr` and not `create` on the session keyring, so creation may be denied. The wrapper logs the failure and still execs the real init; the shim can create the `fscrypt` keyring in the `vold` domain as a fallback. If the shim creates the `fscrypt` keyring, that keyring is labelled `vold`; the `(allow vold vold (key (write search setattr)))` rule covers it.
 
 ### 6.2 Required operations and rules
 
 | Operation | Subject | Object | Permission | Rule source |
 |---|---|---|---|---|
-| create/link `fscrypt` keyring | wrapper | session keyring (`kernel`) | pre-policy; no check | — |
+| create/link `fscrypt` keyring | wrapper (`init` domain) | session keyring (`kernel`) | pre-policy; no check | — |
 | search session keyring | vold | `kernel` | `search` | vendor `vold_31_0 kernel_31_0 (key (write search))` |
 | add logon key | vold | `fscrypt` (`kernel`) | `write` | same vendor rule |
 | search `fscrypt` keyring | vold | `kernel` | `search` | same vendor rule |
@@ -414,6 +435,8 @@ If the shim creates the `fscrypt` keyring as a fallback, that keyring is labelle
 | search `fscrypt` keyring | any process | `kernel` | `search` | plat `(allow domain kernel (key (search)))` / vendor `(allow domain kernel_31_0 (key (search)))` |
 | unlink logon key | vold | `fscrypt` (`kernel` or `vold`) | `write` | vendor `vold_31_0 kernel_31_0 (key (write search))` or `vold_31_0 self (key (... write ...))` |
 | view/read logon key | kernel `request_key` on behalf of any process | `vold` | `view` via possession | `KEY_POS_VIEW` default permission; plat `(allow domain vold (key (search)))` |
+
+If the wrapper runs after policy load (not expected), substitute `init` for `kernel` in the session-keyring and `fscrypt`-keyring rows; the `vold init`/`init init` rules still cover vold's search and write, but keyring creation in `init` may be denied because the platform rule does not grant `create`. The wrapper logs and continues; the shim fallback creates the keyring in the `vold` domain.
 
 ### 6.3 Why no `KEYCTL_SETPERM` is needed
 
@@ -429,7 +452,8 @@ This matches AOSP Android 9-12 legacy behavior and the existing A11 policy. Do n
 ### 6.4 Residual SELinux risks
 
 - If the shim is loaded but `add_key` returns `EACCES`, capture the AVC denial. Do not assume the policy is wrong; the most likely cause is a keyring label mismatch.
-- The `/init.real` file does not need `init_exec` for the pre-policy `execve`, because SELinux policy is not loaded yet. Add a file-contexts entry only if a future design re-execs `/init.real` after policy load.
+- `/system/bin/init.real` **does** need `u:object_r:init_exec:s0`: the donor init is re-exec'd as `/system/bin/init second_stage` after policy load. `/system/bin/init` (the wrapper) needs the same label. Both are set by `SET_METADATA`; the mod fails if either update fails.
+- `/system/bin/ueventd` is a symlink to `init`, so the ueventd service now executes the wrapper. The wrapper detects `ueventd` from `argv[0]`, skips keyring setup, and execs `init.real`. The service `seclabel u:r:ueventd:s0` still labels the process. If ueventd fails to start with an exec denial, capture the AVC before changing labels; do not unlink or replace the symlink.
 - The shim is a `/system/lib64` file labelled `system_lib_file`. If vold is denied `read`/`map`/`execute`, capture the denial before adding any rule.
 
 ---
@@ -440,38 +464,45 @@ This matches AOSP Android 9-12 legacy behavior and the existing A11 policy. Do n
 
 Base branch: `manus/a115f-vendor-fingerprint` at `23f8998f0200969f5748e9eb012d1dc52037a054`. Do **not** build from `build-once` or `preflight`.
 
-New files:
+New files on `manus/a115f-legacy-fscrypt` (head `48438e6`, based on `manus/a115f-vendor-fingerprint@23f8998f0200969f5748e9eb012d1dc52037a054`):
 
 ```
 prebuilts/a115f_legacy_fscrypt/
   build.sh
+  src/a115f_syscalls.h
+  src/freestanding.c
+  src/fscrypt_legacy.h
+  src/fscrypt_legacy.c
   src/init_wrapper.c
   src/fscrypt_legacy_shim.c
-  src/syscalls.h
-  tests/test_uapi.c
-  module.prop
+  tests/test_legacy.c
+scripts/patch_a115f_legacy_fscrypt_vold_rc.py
+tests/test_legacy_fscrypt_vold_rc.py
+.github/workflows/legacy-fscrypt-ci.yml   (local-only; not pushed)
 unica/mods/zz_a115f_legacy_fscrypt/
   customize.sh
   module.prop
 ```
 
-Compiled outputs (CI, not committed unless reproducibility requires it):
+The workflow file is preserved on local branch `local/a115f-legacy-fscrypt-ci-workflow` at `5551184`, because the push credential lacks GitHub's `workflow` scope. All other files are pushed as `48438e6`.
+
+Compiled outputs (not committed):
 
 ```
-prebuilts/a115f_legacy_fscrypt/out/init_wrapper
+prebuilts/a115f_legacy_fscrypt/out/init.a115f_legacy_fscrypt
 prebuilts/a115f_legacy_fscrypt/out/liba115f_fscrypt_shim.so
 ```
 
 ### 7.2 CI compile step
 
-Add a step before `Build ROM` in `.github/workflows/build.yml`:
+`legacy-fscrypt-ci.yml` is not pushed and is not registered in the repository. The same checks run in two places that are pushed:
 
-```yaml
-- name: Build A115F legacy-fscrypt components
-  run: ./prebuilts/a115f_legacy_fscrypt/build.sh
-```
+1. `build.yml` step 1 runs `python3 -m unittest discover -s tests -v`, which includes `tests/test_legacy_fscrypt_vold_rc.py`.
+2. `zz_a115f_legacy_fscrypt/customize.sh` compiles both targets with `build.sh`, runs `build.sh --host-test`, runs the patcher tests, verifies the donor init/ueventd layout, checks the ELF type/architecture/`PT_INTERP`/`.dynamic`/`DT_NEEDED`, verifies the shim exports `ioctl` and no memory functions and imports only `__android_log_print`/`__errno`, and checks the wrapper/shim markers.
 
-`build.sh` uses `clang`/`ld.lld` from the existing build environment and fails on any compile or static-check error. Do not modify `publish-public.yml`.
+Local equivalent results (Zig 0.17.1 / clang 22.1.8 + lld) are recorded in `PORTING_STATUS.md` fact 45: both binaries compile without warnings; the wrapper is a 2624-byte `ET_EXEC` and the shim a 6280-byte `ET_DYN`, each with 0 `DT_NEEDED`; host tests pass.
+
+CI dispatch is currently blocked at the repository level: `POST .../actions/workflows/build.yml/dispatches` returns HTTP 404 and the workflow list is empty, despite `build.yml` existing on the default branch and Actions being enabled (ISSUE-027). Once registration is fixed, dispatch `build.yml` on `manus/a115f-legacy-fscrypt`. Do not modify `publish-public.yml`.
 
 ### 7.3 Mod execution order
 
@@ -483,24 +514,27 @@ Add a step before `Build ROM` in `.github/workflows/build.yml`:
 4. `apply_modules.sh "$SRC_DIR/target/$TARGET_CODENAME/patches"`.
 5. `apply_modules.sh "$SRC_DIR/unica/mods"` — this runs `zz_a115f_legacy_fscrypt`.
 6. APK build.
-7. `build_flashable_zip.sh` — copies `$WORK_DIR/kernel/*.img` unchanged.
+7. `build_flashable_zip.sh` — copies `$WORK_DIR/kernel/*.img` unchanged and packs the modified system image.
 
-The mod must therefore patch `$WORK_DIR/kernel/boot.img` in step 5.
+The mod therefore edits `$WORK_DIR/system/system` in step 5. The boot image stays byte-identical to the stock unsigned image produced by `create_work_dir.sh`.
 
 ### 7.4 Mod behavior
 
 `unica/mods/zz_a115f_legacy_fscrypt/customize.sh` must:
 
 1. Skip unless `TARGET_CODENAME == a115f`.
-2. Require `$WORK_DIR/kernel/boot.img`.
-3. Fail if `$WORK_DIR/kernel/vendor_boot.img` exists (layout not verified).
-4. Unpack, verify `/init`, rename to `/init.real`, add the wrapper, repack, replace the image.
-5. Copy the shim to `$WORK_DIR/system/system/lib64/liba115f_fscrypt_shim.so`.
-6. `SET_METADATA "system" "system/lib64/liba115f_fscrypt_shim.so" 0 0 0644 "u:object_r:system_lib_file:s0"`.
-7. Patch `$WORK_DIR/system/system/etc/init/vold.rc` to add the `setenv` line exactly once, inside the `service vold` block.
-8. Verify the final `vold.rc` contains `service vold`, `setenv LD_PRELOAD`, and the shim path.
-9. Verify the repacked boot image still reports an Android boot header and contains both `init` and `init.real`.
-10. Clean up temporary files; never leave a temp directory under `$WORK_DIR` (the ZIP builder scans `$WORK_DIR` top-level directories).
+2. Require `$WORK_DIR/system/system/bin/init` to be a regular ELF64 AArch64 file (the donor init).
+3. Require `$WORK_DIR/system/system/bin/ueventd` to be a symlink to `init` or `./init`.
+4. Fail if `$WORK_DIR/system/system/bin/init.real` already exists.
+5. Compile both binaries with `prebuilts/a115f_legacy_fscrypt/build.sh`; fail on any compile or architecture check error.
+6. Move donor `init` to `init.real`; install the wrapper as `init`; install the shim into `$WORK_DIR/system/system/lib64`.
+7. `SET_METADATA "system" "system/bin/init" 0 0 0750 "u:object_r:init_exec:s0"`.
+8. `SET_METADATA "system" "system/bin/init.real" 0 0 0750 "u:object_r:init_exec:s0"`.
+9. `SET_METADATA "system" "system/lib64/liba115f_fscrypt_shim.so" 0 0 0644 "u:object_r:system_lib_file:s0"`.
+10. Patch `$WORK_DIR/system/system/etc/init/vold.rc` to add the `setenv` line exactly once, inside the `service vold` block. Use `scripts/patch_a115f_legacy_fscrypt_vold_rc.py`; it is idempotent and rejects a different pre-existing `LD_PRELOAD`.
+11. Verify the final `vold.rc` contains `service vold`, `setenv LD_PRELOAD`, and the shim path.
+12. Verify the final `init` is the wrapper (contains the `A115F_FSCRYPT_WRAPPER` marker), `init.real` is the donor init, and `ueventd` still resolves to `init`.
+13. Do not modify or repack `boot.img`; do not call `magiskboot`.
 
 Use `SKIPUNZIP=1` in `customize.sh` so `APPLY_MODULE` does not auto-copy a `system/` tree.
 
@@ -508,13 +542,15 @@ Use `SKIPUNZIP=1` in `customize.sh` so `APPLY_MODULE` does not auto-copy a `syst
 
 The build must fail loudly if:
 
-- `boot.img` is missing or unpack fails.
-- `ramdisk.cpio` is missing.
-- `/init` is absent or `init.real` already exists.
-- `magiskboot repack` fails or does not produce the new image.
+- `$WORK_DIR/system/system/bin/init` is missing, a symlink, or not ELF64 AArch64.
+- `$WORK_DIR/system/system/bin/ueventd` is missing or does not resolve to `init`.
+- `init.real` already exists.
+- Compilation of the wrapper or shim fails.
+- The wrapper is not `ET_EXEC`/no `PT_INTERP`, or the shim is not `ET_DYN`/exports `ioctl`; either has a `DT_NEEDED` dependency.
 - `vold.rc` is missing or has no `service vold` block.
-- The shim or wrapper binary is missing, wrong architecture, or dynamically linked.
-- `SET_METADATA` fails.
+- The `setenv` patch fails or produces a different `LD_PRELOAD`.
+- `SET_METADATA` fails for either init file or the shim.
+- The final wrapper/shim markers are absent.
 
 Do not silently skip the fix and ship a ZIP that cannot pass FBE.
 
@@ -530,9 +566,11 @@ Do not silently skip the fix and ship a ZIP that cannot pass FBE.
 - Unit test the probe: `arg == NULL` → `ENOTTY`, not success.
 - Unit test ENOTTY-only fallback: raw ioctl success → no translation; raw ioctl `EINVAL` → no translation; raw ioctl `ENOTTY` → translation.
 - Verify wrapper: ELF64 AArch64, `ET_EXEC`, no `PT_INTERP`, no `DT_NEEDED`.
-- Verify shim: ELF64 AArch64, `ET_DYN`, exports `ioctl`, no `DT_NEEDED` on `libdl`/`libkeyutils`.
-- Verify the mod's boot patcher against a **local synthetic cpio** (no device image) to catch `magiskboot cpio` syntax errors.
-- Add a CI check that greps the final `vold.rc` and boot image contents.
+- Verify shim: ELF64 AArch64, `ET_DYN`, exports `ioctl`, no `DT_NEEDED`, and only `__android_log_print`/`__errno` undefined.
+- Verify the mod's system-image checks against the actual donor `system/bin/init` and `ueventd` symlink at build time; fail closed on any layout mismatch.
+- The mod greps the compiled wrapper for `A115F_FSCRYPT_WRAPPER` and the shim for `SHIM_LOADED`; it performs the `readelf`/`awk` dependency and export checks.
+- Unit-test the `vold.rc` patcher against single-line, multiline, CRLF, missing-service, and already-patched inputs.
+- **Local result (2026-11-16):** all checks pass with Zig 0.17.1/clang 22.1.8: wrapper `ET_EXEC`, 2624 bytes, no `PT_INTERP`/`.dynamic`, 0 `DT_NEEDED`; shim `ET_DYN`, 6280 bytes, 0 `DT_NEEDED`, imports exactly `__android_log_print __errno`, exports `ioctl`, no memory exports; host tests print `all legacy fscrypt host tests passed`. The host tests initially crashed on Windows because the callback arguments used `unsigned long` (32-bit on LLP64); switching to `uintptr_t` fixed the host-only truncation and left the aarch64 binaries byte-identical.
 
 ### 8.2 Device test matrix
 
@@ -574,7 +612,8 @@ avc: denied
 
 | Observation | Meaning | Next action |
 |---|---|---|
-| `WRAPPER_ENTER` missing | Wrapper not in the boot ramdisk or kernel did not exec it | Verify boot image contents and header; reflash stock boot |
+| `WRAPPER_ENTER` missing | `/system/bin/init` is not the wrapper, or first-stage init did not exec it | Verify the installed system image contains the wrapper; restore the previous port ZIP or stock system |
+| `UEVENTD_PASSTHROUGH` missing for ueventd | `argv[0]` handling or the symlink was changed | Check the ueventd symlink and service definition; do not replace the symlink |
 | `SESSION_FAIL` / `FSCRYPT_FAIL` | Keyring syscall failed | Check `CONFIG_KEYS`, seccomp, kernel log |
 | `SHIM_LOADED` missing | `LD_PRELOAD` ignored or rc patch absent | Verify `vold.rc`, linker namespace, `AT_SECURE` |
 | `ADD_PROBE_ENOTTY` then no `ADD_OK` | vold probed but did not install | Check the following vold error; capture full log |
@@ -582,7 +621,7 @@ avc: denied
 | `ADD_FAIL EACCES` | SELinux key permission or label mismatch | Capture AVC; compare labels; do not add a blind rule |
 | `ADD_FAIL ENOKEY` | `fscrypt` keyring missing | Check wrapper/shim keyring creation |
 | `Unexpected ioctl` | New request number (e.g., ALL_USERS) | Add handling only after confirming the caller and semantics |
-| No markers, boot loop | Wrapper or boot image problem | Reflash stock boot; do not iterate blindly |
+| No markers, boot loop | Wrapper/init.real problem in the system image | Reflash the previous port ZIP or stock system; do not iterate blindly |
 
 ---
 
@@ -590,16 +629,17 @@ avc: denied
 
 | # | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|---|
-| R1 | Stock A11 boot image has no `/init` or uses a different layout | Medium | Build fails | Preflight check; fail closed |
-| R2 | `magiskboot` version changes and `cpio mv/add` syntax differs | Medium | Build fails | Pin/verify in CI; fallback to `cpio` extraction |
-| R3 | `LD_PRELOAD` ignored by vold | Low | Fix ineffective | Check `SHIM_LOADED`; fallback vold wrapper |
+| R1 | A11 stock first stage does not exec `/system/bin/init selinux_setup`, or the donor init layout differs | Low | Wrapper never runs / build fails | Verified AOSP 12 flow; mod fails closed if `system/bin/init` is not a regular ELF64 binary |
+| R2 | Donor init is re-exec'd post-policy and `init.real` label is wrong | Low | Second-stage exec denial | Both files labelled `init_exec` via `SET_METADATA`; capture AVC if it still fails |
+| R3 | `LD_PRELOAD` ignored by vold | Low | Fix ineffective | Check `SHIM_LOADED`; fallback vold wrapper only after evidence |
 | R4 | SELinux denial on key operations | Medium | FBE fails | Capture AVC; targeted rule only after evidence |
 | R5 | Keyring not inherited by zygote/apps | Low | FBE mounts but app I/O fails | Verify session keyring inheritance; do not override in services |
-| R6 | Wrapper hangs or breaks first-stage init | Low | Dead boot | Wrapper only does keyring syscalls + exec; stock boot restore |
+| R6 | Wrapper breaks init or ueventd | Low | Dead boot / no device nodes | Wrapper only does keyring syscalls + exec; ueventd passthrough; restore previous system image |
 | R7 | `/data` key mismatch from prior failed boot | Medium | Cannot decrypt existing data | Document; format only with explicit approval |
 | R8 | Metadata encryption / wrapped keys engage | Low | Different key path | Check fstab and vold logs; do not assume |
 | R9 | `ioctl` interposition breaks non-fscrypt vold calls | Low | vold misbehaves | Raw passthrough for all non-target requests |
-| R10 | Build uses unpinned `magiskboot` | Medium | Non-reproducible build | Record version/hash; pin in a follow-up |
+| R10 | Wrapper keyring creation fails silently | Low | Shim falls back; FBE may still fail | Wrapper logs every result; shim creates keyring on `ENOKEY` |
+| R11 | Recovery now requires reflashing the system image, not just boot | Medium | Harder recovery | Document a verified stock-system/previous-ZIP restore before any flash |
 
 ---
 
@@ -615,27 +655,29 @@ avc: denied
 
 ## 11. Rollback and safety
 
-- The wrapper lives only in the boot image ramdisk. Reflashing the stock A11 `boot.img` restores the original first-stage init.
-- The shim and `vold.rc` change live in the system image. Reflashing the stock system (or the previous port ZIP) restores them.
-- A failed wrapper should not loop: it execs the real init even when keyring creation fails. If it cannot exec, it halts and logs; the device must be recovered with the stock boot image.
+- The wrapper, `init.real`, the shim, and the `vold.rc` change all live in the system image. Reflashing the stock A11 system (or the previous known-good port ZIP) restores them.
+- The boot image is untouched. Reflashing the stock `boot.img` is still a valid diagnostic/rollback step for boot issues, but it will not remove this fix.
+- A failed wrapper should not loop: it execs the real init even when keyring creation fails. If it cannot exec, it halts and logs; the device must be recovered with the previous system image.
 - Never flash without:
   1. the exact device CSC/firmware,
   2. a verified stock `A115FXXS6CWK2` (or matching) restore package,
   3. confirmed bootloader unlock/AVB state,
-  4. explicit user approval.
+  4. a verified previous port ZIP or stock system image,
+  5. explicit user approval.
 - Never format `/data` as a diagnostic shortcut. It destroys user data and does not prove the fix.
 
 ---
 
 ## 12. Open questions
 
-1. Does the stock A11 `boot.img` contain `/init` at the ramdisk root, and what compression/header version does it use? (F18 says no repack step exists; `change_fs_type.sh` implies `ramdisk.cpio`.)
-2. Is the stock `/init` a real ELF or a symlink? (Must be a real binary for a pre-`/system` exec.)
-3. Does vold run with `AT_SECURE` unset? (Expected; vold is root-started, not setuid.)
-4. Is `/system/lib64` on vold's linker namespace search path? (Expected default namespace.)
-5. Does the final assembled policy preserve the A11 vendor `vold_31_0 kernel_31_0 (key (write search))` rule? (Must verify on device or by inspecting the built `vendor_sepolicy`/precompiled policy.)
-6. Does `request_key()` from zygote/app processes find the `fscrypt` keyring? (Depends on session keyring inheritance; verify with markers/AVC logs.)
-7. Does the A11 kernel have `CONFIG_KEYS`, `CONFIG_ENCRYPTED_KEYS`, and the `logon` key type enabled? (Legacy fscrypt requires them; verify in `/proc/config.gz` or the kernel build config.)
+1. Does the A11 stock first-stage `/init` (Android 12) exec `/system/bin/init selinux_setup` before loading policy, as AOSP 12 does? The donor init's `selinux_setup` path is assumed to match. If the stock first stage instead loads policy itself, the wrapper would create keyrings in `init` context; the existing `vold init`/`init init` key rules cover that, but the "pre-policy" claim would be wrong. Verify from the stock ramdisk/source or a device log.
+2. Is `/system/bin/init` a regular ELF64 AArch64 binary in the donor system? (Confirmed for the donor `system` image used here; the mod re-checks at build time.)
+3. Does the donor init exec `/system/bin/init second_stage` after policy load? (AOSP 12 does; verify on the donor init if a device log shows a second exec.)
+4. Does vold run with `AT_SECURE` unset? (Expected; vold is root-started, not setuid.)
+5. Is `/system/lib64` on vold's linker namespace search path? (Expected default namespace.)
+6. Does the final assembled policy preserve the A11 vendor `vold_31_0 kernel_31_0 (key (write search))` rule? (Must verify on device or by inspecting the built `vendor_sepolicy`/precompiled policy.)
+7. Does `request_key()` from zygote/app processes find the `fscrypt` keyring? (Depends on session keyring inheritance; verify with markers/AVC logs.)
+8. Does the A11 kernel have `CONFIG_KEYS`, `CONFIG_ENCRYPTED_KEYS`, and the `logon` key type enabled? (Legacy fscrypt requires them; verify in `/proc/config.gz` or the kernel build config.)
 
 None of these questions may be answered by assumption in the status docs; each needs a build artifact, a device log, or a source check.
 
@@ -673,4 +715,7 @@ Kernel references:
 ## 14. Change log
 
 - 2026-11-16: Initial design. Records the two-part root cause, exact UAPI layouts, legacy key names/payload, wrapper/shim ABI, SELinux rules, build integration, verification matrix, risks, and open questions. Not implemented, not built, not device-tested. R0.
-- 2026-11-16 (correction): Verified `ioctl` interposition from `.rela.plt` (slot `0x146F30`, `R_AARCH64_JUMP_SLOT`, symbol 105 = `ioctl`); confirmed kernel 4.9 possession permissions are additive and propagate through nested keyring search, so no `KEYCTL_SETPERM` is required; confirmed AOSP `FscryptInstallKeyring()` searches first and donor init retains neither the session keyring nor the `fscrypt` keyring. Clarified that `plat_sepolicy.cil` is the A11 target policy (API 31, from `system_big3.dat`), not donor policy. Aligned the status-doc wording on the defensive `NULL` probe, non-idempotent REMOVE, raw `SYS_ioctl`, pre-policy `/init.real` label, and system-image patch set. Still not implemented, built, or device-tested. R0.
+- 2026-11-16 (correction): Verified `ioctl` interposition from `.rela.plt` (slot `0x146F30`, `R_AARCH64_JUMP_SLOT`, symbol 105 = `ioctl`); confirmed kernel 4.9 possession permissions are additive and propagate through nested keyring search, so no `KEYCTL_SETPERM` is required; confirmed AOSP `FscryptInstallKeyring()` searches first and donor init retains neither the session keyring nor the `fscrypt` keyring. Clarified that `plat_sepolicy.cil` is the A11 target policy (API 31, from `system_big3.dat`), not donor policy. Aligned the status-doc wording on the defensive `NULL` probe, non-idempotent REMOVE, raw `SYS_ioctl`, and system-image patch set. Still not implemented, built, or device-tested. R0.
+- 2026-11-16 (design change): Moved the wrapper from the boot ramdisk `/init` to `/system/bin/init`, because AOSP 12 first-stage init executes `/system/bin/init selinux_setup` before policy load. The donor init moves to `/system/bin/init.real`; both files are labelled `init_exec` because the wrapper is re-executed for `second_stage`. The wrapper preserves `argv[0]` and passes `ueventd` through. The boot image is no longer modified, and `magiskboot` is no longer part of the fix. Source implementation exists on `manus/a115f-legacy-fscrypt`; it is not yet compiled, ROM-built, or device-tested at this point. Superseded by the build entry below. R0.
+- 2026-11-16 (build): Compiled both targets locally with Zig 0.17.1 (clang 22.1.8 + lld) using the project flags, no warnings. Wrapper: 2624-byte ELF64 `ET_EXEC`, entry `0x1010848`, no `PT_INTERP`, no `.dynamic`, 0 `DT_NEEDED`. Shim: 6280-byte ELF64 `ET_DYN`, 0 `DT_NEEDED`, imports exactly `__android_log_print` and `__errno`, exports `ioctl`, no memory exports. The first host-test run crashed with `0xC0000005` because `a115f_keyctl_fn` used 32-bit `unsigned long` on Windows LLP64 and truncated a fake-keyring string pointer; switching the callback arguments to `uintptr_t` fixed the tests and left the aarch64 binaries byte-identical (same SHA-256 before and after). Host tests now print `all legacy fscrypt host tests passed`. Pushed as `325dcd2` (12 files) and `48438e6` (ABI fix); the CI workflow remains local-only (`local/a115f-legacy-fscrypt-ci-workflow@5551184`). R0; no ROM build or device test.
+- 2026-11-16 (CI blocker): `POST .../actions/workflows/build.yml/dispatches` returns HTTP 404 and the workflow list is empty (`total_count: 0`), although the default branch `oneui7-a11q-boot` contains `.github/workflows/build.yml` (blob `ffc26cf3…`, last modified 2026-10-21), Actions is enabled, and the credential has `repo` scope. The repository has no registered workflows; this requires user action (enable/register workflows in the GitHub UI or provide a `workflow`-scoped credential). Do not rewrite the default branch. R0.
