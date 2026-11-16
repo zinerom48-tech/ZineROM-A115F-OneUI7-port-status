@@ -44,6 +44,7 @@ Both gaps must be fixed. A vold-only fix fails with `Unable to find device keyri
 | F18 | `create_work_dir.sh` copies and unsigns the stock A11 `boot.img`; `build_flashable_zip.sh` copies `$WORK_DIR/kernel/*.img` unchanged. This fix does not modify the boot image. | Build scripts; checkpoint. |
 | F19 | The final ZIP builds each partition image with `file_context-$PARTITION` and `fs_config-$PARTITION`; new files need `SET_METADATA`. | `build_flashable_zip.sh:655-663`; `SET_METADATA()` at `common_utils.sh:538`. |
 | F20 | `magiskboot` is downloaded as the **latest** Magisk release by `external/make.sh`; its version is not pinned. This fix no longer uses it. CI compiles with Ubuntu 24.04 clang/lld. | `external_make.sh:249-268`; `build.yml:74-80`; `zz_a115f_legacy_fscrypt/customize.sh`. |
+| F21 | `__flags` in the ADD argument is 0 by construction on A11, so the shim's `__flags == 0` requirement matches the argument donor `vold` actually sends. AOSP 15 `installKey()` places the argument in a zeroing `KeyBuffer` (`KeyUtil.cpp:137`), sets `__flags` bit 0 only when `options.use_hw_wrapped_key` is true (`KeyUtil.cpp:164`), then sets `raw_size` and copies the key (`KeyUtil.cpp:166-167`). `ParseOptionsForApiLevel()` initializes `use_hw_wrapped_key = false` and sets it only for the `wrappedkey_v0` fstab flag (`libfscrypt_fscrypt.cpp:215,227-228`); `ice` maps to `FSCRYPT_MODE_PRIVATE` (`:58`) and `first_api_level <= 29` selects version 1 (`:212`). Donor `vold` matches: the 80-byte header is zeroed by `memset` at `0x471A4` over `key.size()+0x50`, and bit 0 is ORed into `arg+0x4c` (offset 76) only under the `[x22+0x10]` `use_hw_wrapped_key` load at `0x47288`–`0x47298`. | `KeyUtil.cpp:131-178`; `libfscrypt_fscrypt.cpp:58,186-249`; donor `installKey` disassembly; A11 fstab. |
 
 Facts F12-F17 close the earlier keyring-permission, descriptor, payload, ABI-layout, and interposition questions. They do **not** prove runtime behavior on the device.
 
@@ -286,6 +287,7 @@ Constants:
   - `__flags & HW_WRAPPED`: return `-1` with `EOPNOTSUPP` (legacy keys cannot be wrapped).
   - Type 2 (`IDENTIFIER`): return `-1` with `EOPNOTSUPP`; the A11 kernel has no v2 policy support.
   - Any other size: return `-1` with `EINVAL`.
+  - This is not a defensive narrowing that could reject a legitimate A11 call (F21). AOSP 15 zero-initializes the argument (`KeyUtil.cpp:137`), sets bit 0 only for `use_hw_wrapped_key` (`KeyUtil.cpp:164`), and that flag is false unless the fstab carries `wrappedkey_v0` (`libfscrypt_fscrypt.cpp:215,227-228`). Donor `vold` does the same (`memset` at `0x471A4`; conditional store at `0x47288`–`0x47298`). The A11 `/data` entry has no `wrappedkey_v0` and `first_api_level=29` selects v1, so the shipped call has `__flags == 0`.
 - Find the `fscrypt` keyring in PID 1's session keyring. If absent, create it (fallback; the wrapper normally did this).
 - Build the payload:
 
