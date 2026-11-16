@@ -1,6 +1,6 @@
 # RESUME — A115F One UI 7 Port
 
-Snapshot: **2026-11-16**, legacy-fscrypt implementation checkpoint.
+Snapshot: **2026-11-16**, legacy-fscrypt implementation + first CI run checkpoint.
 
 Status board: <https://github.com/zinerom48-tech/ZineROM-A115F-OneUI7-port-status>
 Working branch for this checkpoint: `audit/2026-11-03-keymaster-barrier` (do not overwrite `main`).
@@ -16,7 +16,7 @@ GitHub forks do **not** copy release assets; the 1.84 GB ZIP remains only at the
 
 ## 1. Is it safe to disconnect?
 
-**Yes.** No build, flash, format, or device operation is running. The legacy-fscrypt source is committed and pushed (`manus/a115f-legacy-fscrypt@48438e6`), and both binaries were compiled and host-tested locally. The remaining limitation is external: the GitHub repository currently has zero registered Actions workflows, so the ROM build cannot be dispatched (see §4). Do not delete the audit files listed in section 6 or the source files.
+**Yes.** No build, flash, format, or device operation is running. The legacy-fscrypt source is committed and pushed (`manus/a115f-legacy-fscrypt@48438e6`), both binaries were compiled and host-tested locally, and the branch’s 69-test suite passes in CI. The remaining limitation is external: the build job stops before `make_rom.sh` because `.github/workflows/build.yml` installs the nonexistent `linux-modules-extra-7.0.0-1014-aws` package, and the current token lacks the `workflow` scope to fix it (see §4). Do not delete the audit files listed in section 6 or the source files.
 
 ## 2. Exact current blocker
 
@@ -36,14 +36,14 @@ The code-level root cause is now established. It has two independent parts, and 
 
 **Consequence:** the current `f51460ef…` asset cannot reach the framework even with a perfectly healthy KM4. A diagnostic run on it can only confirm the failure stage and whether key retrieval failed earlier.
 
-**Implemented fix (source only; not compiled or built):**
+**Implemented fix (compiled, host-tested, pushed; not ROM-built):**
 
 - **Part A — `/system/bin/init` wrapper.** AOSP 12 first-stage init executes `/system/bin/init selinux_setup` as PID 1 before policy load. The wrapper creates PID 1's session keyring and the named `fscrypt` keyring, preserves `argv[0]`, skips keyring setup for the `ueventd` symlink path, and execs the donor init at `/system/bin/init.real`. Both files are labelled `init_exec` because the post-policy `second_stage` re-exec runs the wrapper again. The boot image is untouched.
 - **Part B — 64-bit `vold` `LD_PRELOAD` shim.** Calls the real `ioctl` first; only on `ENOTTY` translates ADD/REMOVE/GET_STATUS to legacy `ext4:`/`f2fs:`/`fscrypt:` logon keys with a 72-byte `fscrypt_key` payload. The shim creates the `fscrypt` keyring if it is missing (fallback).
 - SELinux already permits the intended pre-policy path: `(allow domain init (key (search)))`, `(allow domain vold (key (search)))`, `(allow init init (key (write search setattr)))`, `(allow vold init (key (write search setattr)))`, `(allow vold vold (key (write search setattr)))`, plus the versioned `kernel_31_0` rules.
 - Full ABI, structs, syscall numbers, packaging, and risks: `FIX_LEGACY_FSCRYPT.md`.
 
-There is **no successful boot**, no boot animation, and no Setup Wizard. No fix has been compiled into a ROM or tested. Readiness remains **R0**.
+There is **no successful boot**, no boot animation, and no Setup Wizard. The fix has not been compiled into a ROM or device-tested. Readiness remains **R0**.
 
 ## 3. What is already done
 
@@ -89,14 +89,16 @@ There is **no successful boot**, no boot animation, and no Setup Wizard. No fix 
 - No new ZIP was produced.
 - The only ROM artifact is the public `f51460ef…` ZIP from Actions run `#40494388352`, commit `23f8998f…`.
 - That artifact is not boot-tested and cannot succeed at FBE on this kernel.
-- The fix binaries were compiled locally with Zig 0.17.1 (clang 22.1.8 + lld), host tests pass, and the ELF checks pass. They have **not** been built by CI, packaged into a ROM, or device-tested.
-- GitHub currently reports zero registered workflows for `zinerom48-tech/ZineROM-a11q`; a dispatch of `build.yml` returns HTTP 404 even though the default branch contains the file and Actions is enabled. This is an external blocker requiring user action.
+- The fix binaries were compiled locally with Zig 0.17.1 (clang 22.1.8 + lld), host tests pass, and the ELF checks pass. They have **not** been packaged into a ROM or device-tested.
+- CI run `43909580926` on `manus/a115f-legacy-fscrypt@48438e6` passed the full `python3 -m unittest discover -s tests -v` step: `Ran 69 tests in 0.214s`, `OK`, including all 7 patcher tests.
+- The same run failed before `make_rom.sh` in `Set up build environment`: `E: Unable to locate package linux-modules-extra-7.0.0-1014-aws` (exit 100). Ubuntu publishes no such package for the runner kernel `7.0.0-1014-aws`, and all 15 branches contain the same `linux-modules-extra-$(uname -r)` line. The mod’s compile/host-test/`readelf` checks therefore did not run.
+- The minimal fix is to remove that package from the apt install list. It needs a `workflow`-scoped credential or a user edit; the current token scopes are `gist, read:org, repo`.
 - Do not build or publish another ZIP until CI is running and the ROM build is inspected. A candidate ROM build must start from `manus/a115f-legacy-fscrypt`, must not run `publish-public.yml`, and must stay R0 until a device reaches the framework.
 
 ## 5. What the fix needs, in order
 
-1. **Unblock Actions workflow registration (next; user action).** The repository has no registered workflows: `POST .../actions/workflows/build.yml/dispatches` returns HTTP 404 and `GET /actions/workflows` returns `total_count: 0`, although `oneui7-a11q-boot` contains `.github/workflows/build.yml`, Actions is enabled, and the token has `repo` scope. Enable/register workflows in the GitHub UI or provide a `workflow`-scoped credential. Do not force-push the default branch.
-2. **Dispatch `build.yml` on `manus/a115f-legacy-fscrypt`.** The first step runs all `tests/`; the mod then compiles the wrapper and shim, runs the host tests, runs the `vold.rc` patcher tests, and performs the ELF/symbol checks. Fix any failure before building.
+1. **Fix the CI workflow package line (next; user action).** Remove `linux-modules-extra-$(uname -r)` from the `apt install` list in `.github/workflows/build.yml`; the runner resolves it to the nonexistent `linux-modules-extra-7.0.0-1014-aws`. This needs a `workflow`-scoped credential or a user edit. Do not shadow `uname`/`sudo`, add a dummy package, or disable the step.
+2. **Re-dispatch `build.yml` on `manus/a115f-legacy-fscrypt`.** The 69-test suite already passes; watch the `Set up build environment` step, then the mod’s compile/host-test/`readelf` checks inside `make_rom.sh`. Fix any new failure before building.
 3. **Record the result.** The ROM build must produce and inspect a ZIP; record the ZIP SHA-256 and the SHA-256 of `/system/bin/init`, `/system/bin/init.real`, and the shim. Do not publish.
 4. **Review the built image statically.** Confirm `system/bin/init` is the wrapper, `init.real` is the donor init, `ueventd` still resolves to `init`, `vold.rc` has exactly one `setenv LD_PRELOAD`, and the shim is present in `/system/lib64` with the expected label.
 5. **Device test only after recovery is verified.** Capture wrapper markers (`A115F_FSCRYPT_WRAPPER: ENTER`, `SESSION_OK`, `FSCRYPT_OK`, `EXEC`), logcat tag `A115F_FSCRYPT` (`SHIM_LOADED`, `ADD_OK`/`ADD_FAIL`, `REMOVE_*`, `STATUS_*`), the vold fscrypt error (if any), both KM4 starts, and AVC denials. Do not format `/data`, `/keydata`, or `/keyrefuge`.
@@ -159,12 +161,11 @@ The old stalled partial clone at `C:\Users\claymi5433\ZineROM-a11q-src` is not t
 
 ## 7. Next offline work
 
-1. **Unblock Actions workflow registration (next; user action):** the repository reports zero registered workflows despite a valid `build.yml` on the default branch; dispatch returns HTTP 404. Enable/register workflows in the GitHub UI or provide a `workflow`-scoped credential. Do not rewrite the default branch.
-2. **Dispatch the ROM build:** run `build.yml` on `manus/a115f-legacy-fscrypt`; inspect the unit-test step, then the mod's compile/host-test/`readelf` checks. Fix any failure before producing a ZIP.
+1. **Fix the CI workflow package line (next; user action):** remove `linux-modules-extra-$(uname -r)` from the `apt install` list in `.github/workflows/build.yml`; the runner resolves it to the nonexistent `linux-modules-extra-7.0.0-1014-aws`. This needs a `workflow`-scoped credential or a user edit. Do not rewrite the default branch or work around the package.
+2. **Re-dispatch the ROM build:** run `build.yml` on `manus/a115f-legacy-fscrypt`; the 69-test suite already passes, so watch the `Set up build environment` step, then the mod’s compile/host-test/`readelf` checks. Fix any new failure before producing a ZIP.
 3. **Review the built system image statically** before any device test; record all hashes and logs.
-4. **Review the built system image statically** before any device test.
-5. **Keep the status docs current** in `PORTING_STATUS.md`, `ISSUE_REGISTER.md`, `NEXT_DEVICE_TEST.md`, and `FIX_LEGACY_FSCRYPT.md`.
-6. **Optional provenance check:** reproduce `23f8998f…` in a clean environment and compare image hashes with `f51460ef…`. This validates provenance only, not bootability.
+4. **Keep the status docs current** in `PORTING_STATUS.md`, `ISSUE_REGISTER.md`, `NEXT_DEVICE_TEST.md`, and `FIX_LEGACY_FSCRYPT.md`.
+5. **Optional provenance check:** reproduce `23f8998f…` in a clean environment and compare image hashes with `f51460ef…`. This validates provenance only, not bootability.
 
 Do not change fstab, FBE policy, or add another Keymaster bridge based only on static speculation.
 
@@ -267,7 +268,8 @@ Branch tree for the current asset:
 - [ ] Read this file, `PORTING_STATUS.md`, `ISSUE_REGISTER.md`, and `FIX_LEGACY_FSCRYPT.md`.
 - [ ] Confirm the status repo is at the latest audit commit.
 - [x] Source committed and pushed as `manus/a115f-legacy-fscrypt@48438e6`.
-- [ ] Unblock GitHub Actions workflow registration (ISSUE-027); dispatch `build.yml` and record the outcome.
+- [x] CI workflow registration fixed (ISSUE-027); `build.yml` dispatched as run `43909580926`; 69/69 tests passed.
+- [ ] Fix ISSUE-028 (remove `linux-modules-extra-$(uname -r)` from the workflow); re-dispatch `build.yml` and record the build outcome.
 - [ ] Build only after CI is green, then inspect the built image before any device test.
 - [ ] If the phone is available, run the one device test in section 8 after verifying the recovery path and getting explicit approval; capture both `keymaster-4-0` starts, the vold fscrypt line, and the wrapper/shim markers.
 - [ ] Use the branch tree to pick exactly one next branch.

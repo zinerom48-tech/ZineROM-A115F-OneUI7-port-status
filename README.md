@@ -11,17 +11,19 @@ Maintained for **zinerom48-tech** so the latest evidence and next actions are av
 - **Do not install the test ZIP** unless you have a verified stock `A115FXXS6CWK2` restore path and have explicitly approved the risk.
 - Do **not** format `/data`, `/keydata`, or `/keyrefuge` to “fix” the boot loop. That destroys data and does not prove the cause.
 
-## Progress right now (2026-11-04)
+## Progress right now (2026-11-16)
 
 | Measure | Estimate | Meaning |
 |---|---|---|
 | Successful boot | **0%** | No completed boot, no boot animation, no Setup Wizard. |
 | Boot stages reached | **~45%** | Bootloader → kernel → first-stage init → second-stage init → vendor services/HALs. It fails at `/data` file-based encryption before zygote and `system_server`. |
-| Offline root-cause isolation | **~80%** | Failure narrowed to vold `fbeEnable()` → `fscrypt_initialize_systemwide_keys()`. The exact failing sub-step is still unknown; the barrier build has not been device-tested. |
-| Validated fix | **0%** | No fix has been built, flashed, or tested. |
+| Offline root-cause isolation | **~95%** | Code-level root cause established: the A11 4.9 kernel implements only legacy fscrypt, while the Samsung donor `vold` and `init` have the legacy key path stripped. The remaining question is runtime behavior of the fix. |
+| Validated fix | **0%** | The source fix is compiled, host-tested, and CI-tested, but it has not been ROM-built or device-tested. |
 | Device validation | **0%** | No physical A11 available. |
 
 These are bookkeeping estimates, **not** a probability that the ROM will boot. The remaining Android framework/UI work is larger than the stage count suggests.
+
+**2026-11-16 update:** the fix branch `manus/a115f-legacy-fscrypt@48438e6` adds a PID-1 `/system/bin/init` keyring wrapper and a 64-bit `vold` `LD_PRELOAD` shim. CI run `43909580926` passed all 69 tests, including the new `vold.rc` patcher tests. The same run’s **build** stopped before `make_rom.sh` because `.github/workflows/build.yml` installs the nonexistent `linux-modules-extra-7.0.0-1014-aws` package; the token lacks `workflow` scope to fix that line. No ROM build or device test exists yet.
 
 ## What is confirmed
 
@@ -46,15 +48,12 @@ These are bookkeeping estimates, **not** a probability that the ROM will boot. T
 
 ## What is still unknown
 
-1. Which sub-step of `fscrypt_initialize_systemwide_keys()` fails:
-   - fstab option parsing,
-   - device-key retrieval through KeyStorage/Keystore2/Keymaster,
-   - kernel fscrypt key installation,
-   - or writing the `/data` encryption options/references.
-2. Whether the A11’s Keymaster 4.0 **HIDL** HAL registers after the late-fs restart and can be bound by Android 15 Keystore2 at runtime.
-3. Whether `vendor.qseecomd` reaches `vendor.sys.listeners.registered` in the same boot as the barrier.
-4. Whether the prior failure log came from a pre-barrier build (leading hypothesis) and whether the current barrier build behaves differently.
+1. Whether the source fix works at runtime: PID 1 keyring creation before policy load, `LD_PRELOAD` interposition in Samsung `vold`, keyring inheritance, and SELinux labels.
+2. Whether key retrieval through KeyStorage/Keystore2/Keymaster fails **before** key installation on the device. The kernel-key-installation gap itself is confirmed at code level.
+3. Whether the A11’s Keymaster 4.0 **HIDL** HAL registers after the late-fs restart and can be bound by Android 15 Keystore2 at runtime.
+4. Whether `vendor.qseecomd` reaches `vendor.sys.listeners.registered` in the same boot as the barrier.
 5. Whether `/data` was left in a partially encrypted/corrupt state by earlier attempts.
+6. Whether a full ROM build completes after ISSUE-028 (the workflow package line) is fixed.
 
 ## What I need from you (device side)
 

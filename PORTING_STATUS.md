@@ -39,9 +39,9 @@ These percentages are project bookkeeping, **not** a probability that the ROM wi
 | Milestone | Status | Evidence / reason |
 |---|---|---|
 | M0 — Repository and hardware audit | **Complete for offline evidence** | Public source repo, release metadata, package guards, donor/target identities, dynamic-partition geometry, kernel container, A11 vendor HALs, VINTF/SELinux/boot-image/installer compatibility, and source-branch reconciliation are audited. Remaining hardware items (QSEE/TA runtime, SELinux runtime, KM4 late-fs registration) require a device log. Samsung ODE/keydata is closed for this failure. |
-| M1 — Compatibility assessment and build environment | **Partial (source/build only)** | Source is public at `nova-arch008/ZineROM-a11q`; the A115F target and generic QSSI configuration were read; kernel, VINTF, SELinux, boot-image, and installer compatibility are audited. A build has **not** been reproduced locally. |
+| M1 — Compatibility assessment and build environment | **Partial (source/build only)** | Source is public at `nova-arch008/ZineROM-a11q`; the A115F target and generic QSSI configuration were read; kernel, VINTF, SELinux, boot-image, and installer compatibility are audited. The fix branch’s 69-test suite passes in CI, but the build job stops before `make_rom.sh` on a nonexistent workflow package (`linux-modules-extra-7.0.0-1014-aws`). No build has been reproduced locally or in CI. |
 | M2 — Configuration and prerequisite validation | **Partial (config verified; runtime pending)** | Model/bootloader guards, BLOCK OTA metadata, transfer lists, partition sizes, FBE version default, A11 fstab, and the Keymaster barrier were checked. Product/system_ext property overrides and the 64-bit HAL set are audited; the remaining items are device-side runtime behavior. |
-| M3 — Images compiled and inspected | **Partial (inspection only)** | Prebuilt `system`, `vendor`, `product`, `odm`, `boot`, and the patched vendor init were inspected. No image was compiled from source. |
+| M3 — Images compiled and inspected | **Partial (inspection only)** | Prebuilt `system`, `vendor`, `product`, `odm`, `boot`, and the patched vendor init were inspected. No image was compiled from source; the CI build is blocked at environment setup. |
 | M4 — Installer and package validated | **Partial (static only)** | ZIP structure, CRC/member list, updater script, partition geometry, and asset digest. No installation performed. |
 | M5 — Installation and early boot on target | **Not tested — device required** | No physical A11 available. |
 | M6 — Android userspace / boot animation | **Not tested — device required** | Prior log excerpt reaches Android init and the FBE attempt; no boot animation observed. |
@@ -112,6 +112,11 @@ These percentages are project bookkeeping, **not** a probability that the ROM wi
 46. **The wrapper creates both keyrings before policy load.** It calls `keyctl(GET_KEYRING_ID, SESSION, create=1)`, searches for the named `fscrypt` keyring, creates it with `add_key("keyring","fscrypt",NULL,0,SESSION)` if absent, logs every result, preserves `argv[0]`, skips keyring setup for `ueventd`, and always execs `/system/bin/init.real`. It never aborts boot on keyring failure.
 47. **The shim translates only on `ENOTTY`.** It calls the real `ioctl` via raw `SYS_ioctl` first. ADD installs `ext4:`, `f2fs:`, and `fscrypt:` logon keys with the 72-byte `fscrypt_key` payload; REMOVE unlinks all three and fails with `ENOKEY` if any is missing; GET_STATUS reports PRESENT or ABSENT. The shim creates the `fscrypt` keyring if it is missing (fallback) and logs to logcat under tag `A115F_FSCRYPT`; the wrapper logs to `/dev/kmsg` under prefix `A115F_FSCRYPT_WRAPPER: `.
 48. **The boot image is not modified by this fix.** The wrapper and shim are files in the system image; only `$WORK_DIR/system/system` and its `fs_config`/`file_context` entries change. `magiskboot` is not required. Recovery now means reflashing the previous port ZIP or the stock system image, not the stock boot image alone.
+49. **GitHub Actions registration is fixed.** Re-asserting the repository Actions permissions (`PUT /repos/zinerom48-tech/ZineROM-a11q/actions/permissions` with `enabled: true`, `allowed_actions: all`, `sha_pinning_required: false`) returned HTTP 204, after which `GET /repos/.../actions/workflows` reported `total_count: 2`: `build.yml` (id `420352259`, state `active`) and `publish-public.yml` (id `420352261`, state `active`). `build.yml` was dispatched on `manus/a115f-legacy-fscrypt` at commit `48438e6ecb9ab877c76d3bfa2a4d119134604a51` as run `43909580926` (run number 1).
+50. **The CI test step passes.** In run `43909580926`, step 3 `python3 -m unittest discover -s tests -v` completed successfully with `Ran 69 tests in 0.214s` and `OK`. The 69 include all 7 `test_legacy_fscrypt_vold_rc` patcher tests. This is CI evidence for the patcher and the existing package/audit tests; it is not a ROM build or a device test.
+51. **The CI build is blocked by a pre-existing workflow package bug, before the mod runs.** Step 8 `Set up build environment` failed with `E: Unable to locate package linux-modules-extra-7.0.0-1014-aws` and `E: Couldn't find any package by glob 'linux-modules-extra-7.0.0-1014-aws'`, exit code 100. The workflow line is `libzstd-dev linux-modules-extra-$(uname -r) lld …`; the runner kernel is `7.0.0-1014-aws`. Ubuntu's package search returns no results for that package in any suite or architecture. All 15 branches in the repository carry the same `linux-modules-extra-$(uname -r)` line (the audited legacy-fscrypt branch blob is `02972298d5f5`, 6032 bytes), so no existing ref can run the build without a workflow edit.
+52. **The credential still cannot edit workflow files.** `GET /user` reports `X-OAuth-Scopes: gist, read:org, repo`; there is no `workflow` scope. `publish-public.yml` is registered but is `workflow_dispatch`-only and must not be run: it downloads old run `38817227822` and uploads a `ZineROM_OneUI7_a52xq-V3.zip` to GoFile. The branch `build.yml` is `workflow_dispatch`-only, uses `permissions: contents: read`, has an `audit_only` input, and has no GoFile or release steps.
+53. **The minimal CI fix is a one-line workflow change.** Remove `linux-modules-extra-$(uname -r)` from the apt install list, then re-dispatch and observe whether `sudo modprobe erofs f2fs` succeeds on the runner. The workflow edit is not applied because the credential lacks `workflow` scope. The mod's compile/host-test/`readelf` checks are inside `zz_a115f_legacy_fscrypt/customize.sh`, invoked by `make_rom.sh`, which was skipped after the apt failure; they remain unexercised in CI.
 
 ## 4. Current failure analysis
 
@@ -274,17 +279,18 @@ Without items 1–6, installation must not be recommended, regardless of ZIP ava
 
 ### Highest-priority blocker
 
-The code-level root cause is established: the A11 4.9 kernel implements only legacy fscrypt, while donor `vold` and `init` have the legacy key path stripped. Even with a perfectly healthy KM4, the current `f51460ef…` asset cannot install a v1 key into the kernel or create the keyring that every process needs. The source-level fix is now compiled locally, host-tested, and pushed as `manus/a115f-legacy-fscrypt@48438e6`, but it has not been ROM-built or device-tested, and GitHub is not currently running CI for this repository (see below). Local compile and test results remove the build-correctness unknown for the two binaries; the remaining unknowns are runtime behavior: whether the wrapper runs in PID 1 before policy load, whether the `init_exec` labels and ueventd passthrough work, and whether vold honours `LD_PRELOAD`. Readiness remains R0.
+The code-level root cause is established: the A11 4.9 kernel implements only legacy fscrypt, while donor `vold` and `init` have the legacy key path stripped. Even with a perfectly healthy KM4, the current `f51460ef…` asset cannot install a v1 key into the kernel or create the keyring that every process needs. The source-level fix is compiled locally, host-tested, pushed as `manus/a115f-legacy-fscrypt@48438e6`, and its test suite passes in CI (69/69). The CI **build** is blocked before it reaches `make_rom.sh` by a workflow defect: `.github/workflows/build.yml` installs `linux-modules-extra-$(uname -r)`, which resolves to `linux-modules-extra-7.0.0-1014-aws` on the runner; no such package exists in any Ubuntu suite or architecture. The credential lacks `workflow` scope, so the one-line fix cannot be applied yet. Local compile and test results remove the build-correctness unknown for the two binaries; the remaining unknowns are runtime behavior: whether the wrapper runs in PID 1 before policy load, whether the `init_exec` labels and ueventd passthrough work, and whether vold honours `LD_PRELOAD`. Readiness remains R0.
 
 ### Next concrete actions
 
-1. **Unblock workflow registration.** `POST /repos/zinerom48-tech/ZineROM-a11q/actions/workflows/build.yml/dispatches` returns HTTP 404 and `GET /actions/workflows` returns `total_count: 0`, although the default branch `oneui7-a11q-boot` contains `.github/workflows/build.yml` (blob `ffc26cf3…`, last modified 2026-10-21), Actions is enabled, and the token has `repo` scope. The runners/artifacts endpoints return 200. The repository has no registered workflows; ask the user to enable/register them in the GitHub UI Settings → Actions page, or supply a `workflow`-scoped credential so the workflow can be re-pushed. Do not force-push or rewrite the default branch as a workaround.
-2. Dispatch `build.yml` on `manus/a115f-legacy-fscrypt`; watch the `python3 -m unittest discover -s tests -v` step first, then the mod's compile/host-test/`readelf` checks.
+1. **Fix the CI workflow package line.** Remove `linux-modules-extra-$(uname -r)` from the `apt install` list in `.github/workflows/build.yml` (all 15 branches contain it). This requires a `workflow`-scoped credential or a user edit; the current token cannot change workflow files. Do not work around it by shadowing `uname`/`sudo`, adding a dummy package, or disabling the step.
+2. Re-dispatch `build.yml` on `manus/a115f-legacy-fscrypt` after the workflow fix; watch the `python3 -m unittest discover -s tests -v` step, the `Set up build environment` step, then the mod's compile/host-test/`readelf` checks inside `make_rom.sh`.
 3. Record the ZIP SHA-256, build log, and the SHA-256 of the wrapper, `init.real`, and shim in `PORTING_STATUS.md` and `ISSUE_REGISTER.md`.
 4. Device-test only after the stock restore path is verified and the user approves; capture the wrapper markers, shim markers, KM4/Keystore2 lines, both `keymaster-4-0` starts, and AVC denials.
 5. Keep readiness at R0; do not publish a new ZIP or recommend installation until at least one device boot reaches the framework.
 6. Do not rebuild from `manus/a115f-build-once` or `manus/a115f-bootability-preflight`: both lack `scripts/patch_a115f_init.py`. If a rebuild is approved, start from `23f8998f…` or merge that patcher deliberately.
 7. Do not move the barrier into vendor `on post-fs-data`: system `installkey /data` would run before it.
+8. Do not run `publish-public.yml`: it is dispatch-only, downloads old run `38817227822`, and uploads a different (`a52xq`) ZIP to GoFile.
 
 ### What requires the user / physical device
 
@@ -298,6 +304,8 @@ The code-level root cause is established: the A11 4.9 kernel implements only leg
 - Public source repo: <https://github.com/nova-arch008/ZineROM-a11q> (branch `manus/a115f-vendor-fingerprint`, commit `23f8998f…`)
 - Public release repo: <https://github.com/nova-arch008/ZineROM-A115F-OneUI7-boot-test>
 - Release asset URL: <https://github.com/nova-arch008/ZineROM-A115F-OneUI7-boot-test/releases/download/a115f-boot-test/ZineROM_OneUI7_A115F-Port-A057F.zip>
+- CI run on the fix branch: <https://github.com/zinerom48-tech/ZineROM-a11q/actions/runs/43909580926> (commit `48438e6`; 69/69 tests pass; build blocked at `Set up build environment` by the nonexistent `linux-modules-extra-7.0.0-1014-aws` package)
+- Registered workflows: `build.yml` id `420352259` (active), `publish-public.yml` id `420352261` (active, dispatch-only; do not run)
 - Key evidence used for this report:
   - donor `system_build.prop` — donor system properties
   - A11 `vendor_build.prop` — A11 vendor properties
@@ -604,7 +612,74 @@ The wrapper and shim are compiled locally and host-tested, and the branch is pus
 
 The detailed ABI, structs, syscall numbers, packaging, and risk list are in `FIX_LEGACY_FSCRYPT.md`. The Phase 1–5 gates, persistent task queue, and program-level risks are in `DEVELOPMENT_PLAN.md`.
 
-## 15. Change log
+## 15. Session checkpoint — 2026-11-16 (first CI run: tests pass, build blocked by workflow)
+
+### Registration and dispatch
+
+The repository had reported `total_count: 0` registered workflows even though `.github/workflows/build.yml` existed at the default-branch tip. Creating a new branch and pushing an additive documentation commit did not change this. Re-asserting the repository Actions permissions with `PUT /repos/zinerom48-tech/ZineROM-a11q/actions/permissions` (`{"enabled": true, "allowed_actions": "all", "sha_pinning_required": false}`) returned HTTP 204; immediately afterward `GET /actions/workflows` reported `total_count: 2` and both workflows were `active`.
+
+`build.yml` was dispatched with `ref=manus/a115f-legacy-fscrypt` and `audit_only=false` so the full build path would run. The run:
+
+| Field | Value |
+|---|---|
+| Run / number | `43909580926` / 1 |
+| Commit | `48438e6ecb9ab877c76d3bfa2a4d119134604a51` |
+| Branch | `manus/a115f-legacy-fscrypt` |
+| Event | `workflow_dispatch` |
+| URL | <https://github.com/zinerom48-tech/ZineROM-a11q/actions/runs/43909580926> |
+
+### Test result
+
+Step 3, `python3 -m unittest discover -s tests -v`, completed successfully:
+
+```text
+Ran 69 tests in 0.214s
+
+OK
+```
+
+The 69 tests include the 7 `test_legacy_fscrypt_vold_rc` tests for `scripts/patch_a115f_legacy_fscrypt_vold_rc.py`. This is the first CI execution of the new patcher tests and the first CI proof that the fix branch does not break the existing 62-test static/package suite.
+
+### Exact build failure
+
+Step 8, `Set up build environment`, failed before `make_rom.sh`:
+
+```text
+E: Unable to locate package linux-modules-extra-7.0.0-1014-aws
+E: Couldn't find any package by glob 'linux-modules-extra-7.0.0-1014-aws'
+##[error]Process completed with exit code 100.
+```
+
+The workflow command is:
+
+```text
+DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
+  p7zip-full jq attr ccache clang ffmpeg golang \
+  libbrotli-dev libgtest-dev libprotobuf-dev libunwind-dev libpcre2-dev \
+  libzstd-dev linux-modules-extra-$(uname -r) lld jq protobuf-compiler pcre2-utils webp \
+  curl xxd patchelf flex bison libarchive-tools build-essential python3.12-venv device-tree-compiler
+```
+
+The runner kernel is `7.0.0-1014-aws`. Ubuntu's package search returns no results for `linux-modules-extra-7.0.0-1014-aws` in any suite, section, or architecture, so adding a repository or re-running the job cannot fix it. All 15 branches in `zinerom48-tech/ZineROM-a11q` carry the same `linux-modules-extra-$(uname -r)` line, so no existing ref can run the build.
+
+### Minimal fix (prepared, not applied)
+
+```diff
+-  libzstd-dev linux-modules-extra-$(uname -r) lld jq protobuf-compiler pcre2-utils webp \
++  libzstd-dev lld jq protobuf-compiler pcre2-utils webp \
+```
+
+This is the smallest change that addresses the confirmed failure. If the subsequent `sudo modprobe erofs f2fs` fails on the runner, treat that as the next distinct failure and fix it only with the new log; do not pre-emptively add `|| true` or a different kernel package without evidence. The mod’s compile, host-test, `readelf`, and marker checks are not exercised until `make_rom.sh` runs; the apt failure occurs earlier.
+
+### Why the edit is still pending
+
+`GET /user` reports `X-OAuth-Scopes: gist, read:org, repo`. GitHub requires the `workflow` scope to create or update files under `.github/workflows/`, and the token does not have it. The fix therefore needs either a workflow-scoped credential or a user edit. No workaround was applied: shadowing `uname`/`sudo`, installing a dummy package with the missing name, or adding a local apt repository from the test step would hide the defect rather than fix it, and would make the build evidence untrustworthy.
+
+### Safety boundary
+
+`publish-public.yml` is now registered but remains `workflow_dispatch`-only. It downloads old run `38817227822` and uploads a `ZineROM_OneUI7_a52xq-V3.zip` to GoFile. It was not run and must not be run for this A115F work. The branch `build.yml` has `permissions: contents: read`, no GoFile step, no release step, and uploads only a private ZIP artifact. No release was published, no device was flashed, and no `/data` operation was performed. Readiness remains **R0**.
+
+## 16. Change log
 
 - 2026-10-28: Initial status created from repository, release metadata, and static package metadata. No build or device test performed.
 - 2026-10-28: Corrected the source-access claim (repo is public), added the current release asset hash and the stale `BOOT_PROGRESS.md` hash discrepancy, confirmed the donor’s 32-bit support and the helper’s ELF32 dependencies, recorded the FBE v1/v2 decision path, demoted `K00R` and QSEE `0x72000206`, and identified the stock `/oem` mount and Samsung ODE partitions as separate open items. No build or device test performed.
@@ -617,3 +692,5 @@ The detailed ABI, structs, syscall numbers, packaging, and risk list are in `FIX
 - 2026-11-16 (design change): Moved the wrapper from the boot ramdisk `/init` to `/system/bin/init`, because AOSP 12 first-stage init executes `/system/bin/init selinux_setup` before loading policy. The donor init moves to `/system/bin/init.real`; both are labelled `init_exec` because the wrapper runs again for the post-policy `second_stage` re-exec. The wrapper preserves `argv[0]` and passes the `ueventd` symlink through without keyring setup. The boot image is no longer modified and `magiskboot` is no longer used. The source and CI workflow were staged at the time of this entry; they were later compiled, host-tested, and pushed (see the build entry below). Still R0.
 - 2026-11-16 (build): Compiled the wrapper and shim locally with Zig 0.17.1 (clang 22.1.8 + lld) using the project flags, with no warnings. The wrapper is a 2624-byte ELF64 `ET_EXEC` with entry `0x1010848`, no `PT_INTERP`, no `.dynamic`, and 0 `DT_NEEDED`; the shim is a 6280-byte ELF64 `ET_DYN` with 0 `DT_NEEDED`, imports exactly `__android_log_print` and `__errno`, exports `ioctl`, and exports no memory functions. The first host-test run crashed with `0xC0000005` because `a115f_keyctl_fn` used `unsigned long`, which is 32-bit on Windows LLP64 and truncated a fake-keyring string pointer; switching the callback arguments to `uintptr_t` fixed the tests and left the aarch64 binaries byte-identical (same SHA-256 before and after). Host tests now print `all legacy fscrypt host tests passed`. Commits `325dcd2` (12 added files) and `48438e6` (ABI fix) are pushed to `manus/a115f-legacy-fscrypt`; the 13th file, the standalone CI workflow, remains on `local/a115f-legacy-fscrypt-ci-workflow` at `5551184`. Still R0; no ROM build or device test.
 - 2026-11-16 (CI blocker): Attempted to dispatch `build.yml` on `manus/a115f-legacy-fscrypt` via the REST API. The request returned HTTP 404, and `GET /repos/.../actions/workflows` returned `total_count: 0` even though the default branch `oneui7-a11q-boot` contains `.github/workflows/build.yml` (blob `ffc26cf3…`, last modified 2026-10-21). Actions is enabled (`enabled: true`, `allowed_actions: all`), the runners and artifacts endpoints return HTTP 200, and the credential scopes are `gist, read:org, repo` (no `workflow`). The repository has no registered workflows. This requires user action (enable/register workflows in the GitHub UI or provide a `workflow`-scoped credential); do not rewrite or force-push the default branch. Still R0.
+- 2026-11-16 (CI registration fixed): Re-asserted the repository Actions permissions with `PUT /repos/zinerom48-tech/ZineROM-a11q/actions/permissions` (`enabled: true`, `allowed_actions: all`, `sha_pinning_required: false`), which returned HTTP 204. `GET /actions/workflows` then reported `total_count: 2`: `build.yml` id `420352259` and `publish-public.yml` id `420352261`, both active. Dispatched the audited branch workflow at `manus/a115f-legacy-fscrypt@48438e6` with `audit_only=false`; run `43909580926` was created. The earlier branch-push probe (`ci/register-workflows`) did not register workflows; the permissions write did.
+- 2026-11-16 (CI run): Run `43909580926` passed the full `python3 -m unittest discover -s tests -v` step (`Ran 69 tests in 0.214s`, `OK`), including all 7 new `test_legacy_fscrypt_vold_rc` tests. The job then failed before `make_rom.sh` in `Set up build environment` with `E: Unable to locate package linux-modules-extra-7.0.0-1014-aws` (exit 100). Ubuntu’s package search confirms the package does not exist in any suite or architecture; all 15 repository branches contain the same `linux-modules-extra-$(uname -r)` line. The minimal fix is to remove that package from the apt install list. The edit is pending because the token scopes are still `gist, read:org, repo` (no `workflow`); no workaround was applied. The mod’s compile/host-test/`readelf` checks did not run. No release, flash, or `/data` operation was performed. Still R0.

@@ -4,7 +4,7 @@ Last updated: 2026-11-16
 
 This is the **only** device test that should be run next. It is a diagnostic run, not a proven fix. The current ZIP contains a Keymaster barrier and kmsg markers; the prior `enablefilecrypto` failure log most likely came from a build before that barrier. The barrier waits for Keystore2 registration, not for KM4, so a completed barrier is not proof that the FBE key path is healthy.
 
-**Updated 2026-11-16 — the current asset cannot succeed at FBE even with a healthy KM4.** The A11 4.9.227 kernel implements only legacy fscrypt key management, while donor `vold` is ioctl-only and donor `init` creates no keyring. Test this asset only to capture where the failure occurs; do not treat a successful boot as a possible outcome of this run. The fix source is compiled locally and host-tested (`manus/a115f-legacy-fscrypt@48438e6`), but it has not been built into a ROM, so there is still no fixed ZIP to test.
+**Updated 2026-11-16 — the current asset cannot succeed at FBE even with a healthy KM4.** The A11 4.9.227 kernel implements only legacy fscrypt key management, while donor `vold` is ioctl-only and donor `init` creates no keyring. Test this asset only to capture where the failure occurs; do not treat a successful boot as a possible outcome of this run. The fix source is compiled locally and host-tested (`manus/a115f-legacy-fscrypt@48438e6`), and its 69-test suite passes in CI (run `43909580926`), but the CI build stops before `make_rom.sh` on the workflow package defect tracked as ISSUE-028. It has not been built into a ROM, so there is still no fixed ZIP to test.
 
 Two expectations to keep straight while reading the log:
 
@@ -186,7 +186,7 @@ Do not send only “it didn’t boot.” The exact barrier/Keystore2/KM4/vold li
 
 ## 9. Fixed-build test — only after the build exists and recovery is verified
 
-Do **not** use this section until a ZIP built from `manus/a115f-legacy-fscrypt@48438e6` (or a later inspected commit) exists, its system image has been statically inspected, and the stock restore path is verified. The fixed build does not modify the boot image; recovery means reflashing the previous port ZIP or the stock system image.
+Do **not** use this section until a ZIP built from `manus/a115f-legacy-fscrypt@48438e6` (or a later inspected commit) exists, its system image has been statically inspected, and the stock restore path is verified. No such ZIP exists yet: CI run `43909580926` passed all 69 tests but stopped before `make_rom.sh` at `Set up build environment` because of ISSUE-028. The fixed build does not modify the boot image; recovery means reflashing the previous port ZIP or the stock system image.
 
 Before flashing, record the ZIP SHA-256, the build log, and the SHA-256 of `/system/bin/init`, `/system/bin/init.real`, and `/system/lib64/liba115f_fscrypt_shim.so`.
 
