@@ -1,8 +1,10 @@
 # Next Device Test — A115F FBE Diagnostic
 
-Last updated: 2026-11-04
+Last updated: 2026-11-16
 
 This is the **only** device test that should be run next. It is a diagnostic run, not a proven fix. The current ZIP contains a Keymaster barrier and kmsg markers; the prior `enablefilecrypto` failure log most likely came from a build before that barrier. The barrier waits for Keystore2 registration, not for KM4, so a completed barrier is not proof that the FBE key path is healthy.
+
+**Updated 2026-11-16 — the current asset cannot succeed at FBE even with a healthy KM4.** The A11 4.9.227 kernel implements only legacy fscrypt key management, while donor `vold` is ioctl-only and donor `init` creates no keyring. Test this asset only to capture where the failure occurs; do not treat a successful boot as a possible outcome of this run. A fixed build is designed in `FIX_LEGACY_FSCRYPT.md` but has not been built.
 
 Two expectations to keep straight while reading the log:
 
@@ -78,6 +80,8 @@ If ADB is unavailable, record the model/CSC/firmware from the phone’s About sc
 
 Prior attempt (pre-barrier build): `cryptfs enablefilecrypto` → `Status(-8, EX_SERVICE_SPECIFIC)` → Rescue Party reason `enablefilecrypto_failedK00R`. If this run fails, the important question is whether the barrier completed and whether Keystore2 reported KM4 before the failure.
 
+The 2026-11-16 analysis shows that this run must fail at key installation regardless of KM4: donor `vold` uses an ioctl the A11 kernel does not implement, and donor `init` provides no keyring. The log is still useful because it shows whether key *retrieval* failed earlier, which determines whether the wrapper/shim fix is sufficient or whether KM4/Keystore2 also needs work.
+
 The first `QSEECom_start_app failed` in the new log is not the same failure as the prior FBE error. It is expected before `/vendor/firmware_mnt` is mounted; keep the full log so the second `keymaster-4-0` start can be evaluated.
 
 ## 4. Capture the logs
@@ -121,6 +125,8 @@ grep -iE "Successfully registered Keystore 2.0 service|Skipping keymaster compat
 grep -iE "keymaster-4-0|qseecom|QSEECom|android.hardware.keymaster@4.0" logcat-all.txt dmesg.txt
 grep -iE "fscrypt_initialize_systemwide_keys|No mount point entry for /data|Unable to parse encryption options|EncryptionOptions not initialized" logcat-all.txt dmesg.txt
 grep -iE "Failed to get ephemeral wrapped key|decryptWithKeystoreKey failed|decryptWithoutKeystore failed|encryptWithKeystoreKey failed|Version mismatch" logcat-all.txt dmesg.txt
+grep -iE "Failed to install fscrypt key|Failed to open /data to install key|Failed to evict fscrypt key|Failed to get status for fscrypt key|Inappropriate ioctl for device" logcat-all.txt dmesg.txt
+grep -iE "A115F_FSCRYPT_SHIM|A115F_FSCRYPT_WRAPPER|fscrypt.*keyring|Creating new key in|No key found in" logcat-all.txt dmesg.txt
 grep -iE "vold|keystore2|keymaster|linker|fscrypt" logcat-all.txt dmesg.txt
 ```
 
@@ -143,6 +149,10 @@ On Windows, use `findstr /i /c:"..."` or open the files in a text editor.
 | `decryptWithKeystoreKey failed` / `Failed to get ephemeral wrapped key` | KeyStorage/Keystore2/Keymaster key retrieval failed. | Investigate the Keystore2 ↔ KM4 path. |
 | `Unable to parse encryption options` / `No mount point entry for /data` | fstab/option parsing failed. | Re-check the `/data` fstab entry before touching Keymaster. |
 | `install_storage_key`/kernel fscrypt error | Kernel key installation or policy failed. | Check A11 kernel fscrypt/ICE support. |
+| `Failed to install fscrypt key to /data: Inappropriate ioctl for device` | **Confirmed code-level root cause.** Donor `vold` issued `FS_IOC_ADD_ENCRYPTION_KEY`, and the A11 4.9 kernel returned `ENOTTY`. The current asset cannot install a key; the wrapper/shim fix is required. | No further diagnosis needed for this sub-step; build the fix from ISSUE-024/025. |
+| `Failed to open /data to install key` | `vold` could not open the mountpoint; the key install never reached the ioctl. | Check `/data` mount state and the fstab, but do not format. |
+| `Creating new key in` / `No key found in` with no `Failed to install fscrypt key` line | Key retrieval (KeyStorage/Keystore2/KM4) failed before installation. | The KM4/Keystore2 branch is the earlier blocker; fixing legacy fscrypt alone will not boot. |
+| `A115F_FSCRYPT_WRAPPER_*` or `A115F_FSCRYPT_SHIM_*` markers | Only present in a fixed build, not in `f51460ef…`. Their absence here is expected and is not evidence. | Use them only when testing the wrapper/shim build. |
 | `Version mismatch` | A key blob or policy version is incompatible. | Check FBE version and Keymaster key format. Samsung ODE is already excluded for this `/data` entry. |
 
 Do not treat `Keymaster device ready` alone as success: the A11 helper logs it even when `getSecurityLevel(TE)` failed, and then exits 0.
@@ -164,6 +174,8 @@ Do not send only “it didn’t boot.” The exact barrier/Keystore2/KM4/vold li
 ## 8. What not to do
 
 - Do not flash a different ZIP or a “fixed” build yet.
+- Do not expect this asset to boot. It cannot install a legacy fscrypt key on the A11 4.9 kernel; a failed FBE attempt here does not by itself prove the KM4/Keystore2 path is broken.
+- Do not interpret the absence of `A115F_FSCRYPT_WRAPPER_*` or `A115F_FSCRYPT_SHIM_*` markers as a fault; those markers exist only in the planned fixed build.
 - Do not disable FBE, edit the fstab, or add another Keymaster bridge by guesswork.
 - Do not move the barrier into vendor `on post-fs-data`; system `installkey /data` runs before that trigger.
 - Do not treat `A115F_KEYMASTER_BARRIER_COMPLETE` as proof that KM4 is ready.

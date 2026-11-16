@@ -1,6 +1,6 @@
 # ZineROM One UI 7 — Galaxy A11 (SM-A115F) Port Status
 
-Last updated: 2026-11-04
+Last updated: 2026-11-16
 
 Status board: <https://github.com/zinerom48-tech/ZineROM-A115F-OneUI7-port-status>
 
@@ -27,8 +27,8 @@ R0 means only that the release exists, its identity/hash are confirmed, and part
 |---|---|---|
 | Successful boot outcome | **0%** | No completed boot, no boot animation, no Setup Wizard, no home screen. |
 | Boot stages reached | **~45%** | Bootloader → kernel → first-stage init → second-stage init → vendor services/HALs. It fails at `/data` FBE before zygote and `system_server`. |
-| Offline root-cause isolation | **~80%** | Failure narrowed to vold `fbeEnable()` → `fscrypt_initialize_systemwide_keys()`. KM4 start ordering and the ODE/UCM branch have been audited; the exact failing sub-step still requires a device log. |
-| Validated fix | **0%** | No fix has been built, flashed, or tested. |
+| Offline root-cause isolation | **~95%** | Code-level root cause established: the A11 4.9 kernel implements only legacy fscrypt, while the Samsung donor `vold` and `init` have the legacy key path stripped. The exact first failing call on the prior build still requires a device log. |
+| Validated fix | **0%** | A fix is designed but not built, flashed, or tested. |
 | Physical-device validation | **0%** | No A11 is available for installation, logcat, pstore, or hardware testing. |
 | Build/package audit | **~85% static** | The artifact exists and its package structure is audited. This is not evidence that it boots. |
 
@@ -100,6 +100,14 @@ These percentages are project bookkeeping, **not** a probability that the ROM wi
 34. The Samsung ODE/UCM branch is closed for first `/data` encryption. Disassembly of donor `vold` shows exactly one direct call to `isUcmOdeMode()`, inside `ParseOptionsForApiLevel` while parsing the `wrappedkey_v0` flag. `isUcmOdeMode()` reads `/efs/sec_efs/ucm_ode_mode`, parses it as base-10, and returns true only for the value `2`; missing, unreadable, or other values return false. The A11 `/data` fstab entry uses plain `fileencryption=ice` and has no `wrappedkey_v0`, so ODE is not engaged for first `/data` encryption. The `/keydata` and `/keyrefuge` fstab entries exist but donor vold has no code path that consumes them in this operation.
 35. Source-branch audit: only `manus/a115f-vendor-fingerprint` at `23f8998f0200969f5748e9eb012d1dc52037a054` contains `scripts/patch_a115f_init.py` and the barrier. The GitHub compare API shows `23f8998f…` is 13 commits ahead of `ec9239a121e57b43d985d7c5756adf3cb754aba3` (build-once), so build-once is a strict ancestor containing nothing that `23f8998f…` lacks. `a61d5a41fb0871c5a6ed908e8d98c77da5965661` (preflight) is 2 commits ahead and 15 behind: it adds stock-blob extraction (`0266bc3c`) and the public-artifact-upload visibility guard (`a61d5a41`), but lacks the barrier and the 13 audit commits. A rebuild must start from `23f8998f…` and may cherry-pick `0266bc3c`; never the reverse.
 36. No physical Galaxy A11 is available in this session. No installation, boot, logcat, pstore, or hardware test has been performed.
+37. **The A11 4.9.227 kernel implements only legacy fscrypt key management.** Its source uses `request_key(&key_type_logon, …)` and `fs/crypto/policy.c` exposes only set/get policy. A byte scan of the packaged `vmlinux.bin` found 6 `FS_IOC_SET_ENCRYPTION_POLICY` (`0x800C6613`) sites, 4 `FS_IOC_GET_ENCRYPTION_POLICY` (`0x400C6615`) sites, and **0** `FS_IOC_ADD_ENCRYPTION_KEY` (`0xC0506617`) sites. There is no `FS_IOC_REMOVE_ENCRYPTION_KEY` or `FS_IOC_GET_ENCRYPTION_KEY_STATUS` implementation either.
+38. **The donor Samsung `vold` is ioctl-only.** `installKey` (`0x47114`, size `0x51C`) opens `/data` and calls `ioctl(fd, 0xC0506617, &key_spec)` at `0x472FC`; the failure log site is `Failed to install fscrypt key to ` at file offset `0x1842B`. `evictKey` (`0x47B74`, size `0x4E0`) calls `ioctl(fd, 0xC0406618, &arg)` at `0x47C30`. `waitForBusyFiles` (`0x48054`, size `0x624`) uses REMOVE and `FS_IOC_GET_ENCRYPTION_KEY_STATUS` (`0xC080661A`). Donor `vold` imports no `add_key` or `keyctl`; its only `syscall` callers are `async_safe_write_log` at `0x3FE20`/`0x3FF74`/`0x3FF84`. It links `libkeyutils.so` but imports neither wrapper symbol.
+39. **The donor `vold` has no legacy fallback symbols.** The recovered `.gnu_debugdata` symbol table contains `installKey`, `evictKey`, and `waitForBusyFiles`, but no `installKeyLegacy`, `evictKeyLegacy`, `isFsKeyringSupported`, or `fscryptKeyring`. By contrast, LineageOS 22.2 (Android 15) and 23.1 (Android 16) `KeyUtil.cpp` still contain the complete fallback: `isFsKeyringSupportedImpl()` probes ADD with a null argument and treats `ENOTTY` as legacy; `installKeyLegacy()` searches PID 1's session keyring for the `fscrypt` keyring and adds `ext4:`, `f2fs:`, and `fscrypt:` logon keys with a 72-byte `fscrypt_key` payload; `evictKeyLegacy()` unlinks all three. **The earlier claim that “Android 15 removed legacy fscrypt support” is wrong; Samsung's donor binaries removed it.**
+40. **The donor Samsung `init` does not create either keyring.** It has no `keyring`/`add_key`/`keyctl`/`request_key` strings, no `libkeyutils.so` DT_NEEDED, no key-related dynsyms, and no keyctl symbols in its `.gnu_debugdata`. The full `SecondStageMain` function (`0x155DFC`, size `0x5574`) contains no `svc` instruction, so the AOSP `keyctl_get_keyring_ID(KEY_SPEC_SESSION_KEYRING, 1)` call in `init.cpp` is not present in this binary. AOSP/Lineage `init.cpp` still has that call and `FscryptInstallKeyring()` still creates the named keyring.
+41. **The legacy key must live in PID 1's session keyring.** Kernel 4.9 resolves legacy fscrypt keys with `request_key` in the context of every process that touches `/data`; all processes inherit PID 1's session keyring. A vold-private session keyring would be invisible to zygote, apps, and system_server. `keyctl_session_to_parent()` rejects `parent->pid <= 1`, so a helper service cannot inject the keyring into init; PID 1 itself must create it.
+42. **A PID-1 wrapper on the `second_stage` re-exec is viable.** The stock A11 first-stage init executes `/system/bin/init` with `selinux_setup` as PID 1. Donor `SetupSelinux` loads policy and re-execs `/system/bin/init` with `second_stage`; the donor binary contains `/system/bin/init` and `second_stage` and has no `/proc/self/exe` string. A wrapper at `/system/bin/init` can therefore create the session and `fscrypt` keyrings after policy load, then `execv` the real init while remaining PID 1. The session keyring survives `exec`.
+43. **SELinux already permits the fix.** Donor `plat_sepolicy.cil` contains `(allow domain init (key (search)))`, which lets every domain search the init-labelled session and `fscrypt` keyrings; `(allow domain vold (key (search)))`, which covers the vold-labelled logon keys installed into them; `(allow init init (key (write search setattr)))`; `(allow vold init (key (write search setattr)))`; and `(allow vold vold (key (write search setattr)))`. Kernel 4.9 `key_create_or_update()` requires only `write` on the destination keyring. No policy change is required for keyring creation, key installation, search, or unlink.
+44. **Expected device evidence if key installation is reached:** the ADD ioctl returns `ENOTTY` on f2fs 4.9, and donor vold logs `Failed to install fscrypt key to /data: Inappropriate ioctl for device`. If the prior build failed earlier, the log instead shows KeyStorage/Keystore2 errors. The prior excerpt's `Status(-8, EX_SERVICE_SPECIFIC)` does not distinguish these.
 
 ## 4. Current failure analysis
 
@@ -110,7 +118,7 @@ The prior Android attempt reaches second-stage init, starts vendor processes, at
 The available log is an excerpt, not the raw capture. It does not include the vold service-specific error code, the full `logcat`, or a SHA-256 tying it to a particular ZIP. The prior attempt may predate the `wait_for_keymaster` barrier now present in `f51460ef…`. Therefore:
 
 - The failure is confirmed at the stage level: FBE setup for `/data` fails and init reboots to Recovery.
-- The root cause is **not** established.
+- The root cause is **established at code level**: the donor userspace has no legacy fscrypt path, and the A11 4.9 kernel has no modern fscrypt key ioctls. The exact first failing call in the prior boot is still unknown because the log is only an excerpt.
 - `K00R` is not the root cause; it is a Samsung property value that also appears on booted devices.
 - The QSEE `0x72000206` messages are suspicious but not sufficient; identical messages occur on a booting device.
 
@@ -128,14 +136,23 @@ The `/oem` and QSEE events are earlier, but neither is proven to be the boot-cri
 
 ### Exact failing operation
 
-`vdc cryptfs enablefilecrypto` maps to vold’s AIDL `fbeEnable()`. In Android 15, `fbeEnable()` calls `fscrypt_initialize_systemwide_keys()`. That function can fail at four distinct points:
+`vdc cryptfs enablefilecrypto` maps to vold’s AIDL `fbeEnable()`. In Android 15, `fbeEnable()` calls `fscrypt_initialize_systemwide_keys()`. Four sub-steps can fail:
 
-1. `init_data_file_encryption_options()` — parses the `/data` fstab entry. The A11 entry (`fileencryption=ice`, no key directory) is structurally valid, so this is the least likely failure.
+1. `init_data_file_encryption_options()` — parses the `/data` fstab entry. The A11 entry (`fileencryption=ice`, no key directory) is structurally valid.
 2. `retrieveOrGenerateKey(device_key_path, device_key_temp, …)` — reads or creates the device key through KeyStorage, Keystore2, and the Keymaster HAL.
 3. `install_storage_key(DATA_MNT_POINT, …)` — installs the key into the kernel and sets the fscrypt policy.
 4. Writing the `/data` encryption options/references after the key is installed.
 
-The current evidence does **not** distinguish these four. A raw log containing the vold/keymaster/keystore2 lines is required before changing fstab, FBE policy, or adding another Keymaster bridge.
+**Sub-step 3 is a confirmed, unconditional failure in the shipped combination.** The A11 kernel 4.9.227 implements only legacy fscrypt, while donor `vold` uses only `FS_IOC_ADD_ENCRYPTION_KEY`. The ioctl cannot succeed, so `installKey()` must return false and `fbeEnable()` must fail. Steps 1, 2, and 4 are not proven on the device; step 2 may fail earlier if KM4/Keystore2 is unhealthy.
+
+The failure has two independent parts:
+
+- **Key installation gap:** donor `vold` never falls back to legacy `add_key`/`keyctl`; the A11 kernel has no ADD/REMOVE/GET_STATUS ioctls. Donor vold therefore logs `Failed to install fscrypt key to /data: Inappropriate ioctl for device` if it reaches that call.
+- **Keyring gap:** donor `init` never creates the session keyring or the named `fscrypt` keyring, and a helper cannot inject one into PID 1. Even a restored vold fallback would fail with `Unable to find device keyring`, and no other process could resolve the key.
+
+Fixing only one part cannot boot `/data`. The leading fix (section 14) restores both: a PID-1 wrapper creates the keyrings, and a vold `LD_PRELOAD` shim translates the three unsupported ioctls.
+
+The available log is an excerpt, not the raw capture. It does not include the vold service-specific error code, the full `logcat`, or a SHA-256 tying it to a particular ZIP. The prior attempt may predate the `wait_for_keymaster` barrier now present in `f51460ef…`. The first *observed* failure is still the `enablefilecrypto` failure, but the first *deterministic* failure in the current ships-as-built combination is the legacy/v2 mismatch above.
 
 ### FBE version assessment
 
@@ -182,10 +199,12 @@ The first abort is therefore expected and is not by itself a boot-critical failu
 - **H2 — Helper runtime gap:** largely resolved. The 32-bit helper dependencies are present and `ELF32`; a missing 32-bit library is no longer a leading explanation. ABI incompatibility or SELinux transition is still possible.
 - **H3 — Samsung ODE/keydata mismatch:** **disproven for first `/data` encryption.** Donor vold consults `isUcmOdeMode()` only while parsing `wrappedkey_v0`; the A11 `/data` fstab has no such flag. `/keydata` and `/keyrefuge` are not consumed by donor vold in this operation. Keep the partition-state caution, but do not treat ODE as a cause of this failure.
 - **H4 — `/data` state:** a previous failed attempt left `/data` or its metadata partially encrypted/corrupt, so `enablefilecrypto` fails before Keymaster is reached. This must not be tested by formatting without explicit approval.
-- **H5 — Kernel feature gap:** the A11 4.9 kernel lacks a crypto/inline-encryption feature required by the donor’s FBE path. This is less likely if policy v1 is selected, but not ruled out.
-- **H6 — Prior log predates the barrier:** confirmed as the leading explanation. The prior diagnostic ZIP `1103fc00…` predates commit `190586c` (barrier) and `23f8998f…` (markers); the current `f51460ef…` asset was built from `23f8998f…` and contains the barrier. No barrier-containing build is known to have been device-tested.
-- **H7 — Keystore2/KM4 runtime binding gap:** the 64-bit HIDL client is present, but KM4 may not be registered or usable when Keystore2/fscrypt needs it. This is the main remaining Keymaster branch; the first-start failure path and late-fs restart must be checked in the same log.
+- **H5 — Kernel feature gap:** **closed as originally stated, replaced by the confirmed userspace/kernel mismatch.** The kernel lacks the modern fscrypt key ioctls, but it implements legacy v1 fscrypt with ICE/XTS/PFK. The missing piece is userspace support, not a kernel crypto feature.
+- **H6 — Prior log predates the barrier:** confirmed as the leading explanation for why the prior log has no barrier markers. The prior diagnostic ZIP `1103fc00…` predates commit `190586c` (barrier) and `23f8998f…` (markers); the current `f51460ef…` asset was built from `23f8998f…` and contains the barrier. No barrier-containing build is known to have been device-tested.
+- **H7 — Keystore2/KM4 runtime binding gap:** the 64-bit HIDL client is present, but KM4 may not be registered or usable when Keystore2/fscrypt needs it. This remains a possible *earlier* failure in `retrieveOrGenerateKey()`; it is independent of the confirmed legacy-fscrypt gap.
 - **H8 — Late-fs restart is sufficient:** the first `on init` abort is benign because `class_start early_hal` starts KM4 again after `/vendor/firmware_mnt` is mounted. This is consistent with the init ordering but has not been observed on a device.
+- **H9 — Key retrieval fails before key installation:** if KM4 or Keystore2 is unhealthy, `retrieveOrGenerateKey()` fails before `installKey()` is reached. The device log must still distinguish this from the confirmed ioctl failure; fixing legacy fscrypt does not prove KM4 is usable.
+- **H10 — Wrapper/shim runtime gaps:** `LD_PRELOAD` may be ignored by vold, `/system/bin/init.real` may not receive the `init_exec` label, or the wrapper's raw syscalls may be denied. These are build/runtime risks of the proposed fix, not causes of the original failure.
 
 ## 5. Untested assumptions
 
@@ -195,7 +214,9 @@ The first abort is therefore expected and is not by itself a boot-critical failu
 - That the first `on init` KM4 abort is harmless and the system `on late-fs` `class_start early_hal` restart succeeds after `/vendor/firmware_mnt` is mounted. The ordering is confirmed; the device behavior is not.
 - That the QSEECom listener gate completed for the current asset and that `qseecom-service` registered before the late-fs KM4 start.
 - That the prior log belongs to the current `f51460ef…` asset (it does not; no SHA linkage exists).
-- That the A11 kernel supports the FBE policy version actually selected and the inline-encryption path used by `/data`.
+- That the A11 kernel’s legacy fscrypt path (v1 policy, session keyring lookup, ICE) behaves as its source and disassembly indicate. The kernel audit is static only.
+- That a PID-1 wrapper can create the session and `fscrypt` keyrings after SELinux policy load and before `SecondStageMain`, and that `/system/bin/init.real` can be labeled `init_exec` so the wrapper’s exec is allowed.
+- That vold honours `LD_PRELOAD` on this Samsung build, and that the shim’s ADD/REMOVE/GET_STATUS emulation matches the donor `vold` ABI and the 4.9 keyring semantics.
 - That `/data` is intact and was not altered by earlier experiments. `/keydata` and `/keyrefuge` are no longer considered a likely cause of this failure, but their state is still unknown and must not be modified.
 - That the package’s `boot.img` kernel is the stock A11 kernel and is compatible with the donor system.
 - That the dynamic-partition geometry is valid for the user’s exact A115F variant/CSC.
@@ -220,6 +241,12 @@ The first abort is therefore expected and is not by itself a boot-critical failu
    - `A115F_KEYMASTER_BARRIER_COMPLETE`
 2. Do not stop at the first `QSEECom_start_app failed`; that line is expected before `/vendor/firmware_mnt` is mounted. The decisive question is whether the **late-fs** start succeeds and registers KM4.
 3. Capture `adb logcat -b all -v threadtime -d` and inspect `vold`, `keystore2`, `keymaster`, `QSEECom`, and linker errors.
+   For the confirmed legacy-fscrypt branch, grep for:
+   - `Failed to install fscrypt key to /data: Inappropriate ioctl for device` — the ADD ioctl reached the kernel and was rejected; this directly confirms the code-level root cause.
+   - `Failed to open /data to install key` — the key install never reached the ioctl.
+   - `Failed to evict fscrypt key` / `Failed to get status for fscrypt key` — REMOVE/GET_STATUS paths.
+   - `Creating new key in`, `No key found in`, `encryptWithKeystoreKey failed`, `decryptWithKeystoreKey failed`, `Version mismatch` — key retrieval failed before key installation, so KM4/Keystore2 is the earlier blocker.
+   - `Unable to find device keyring` is an Android 12/14 legacy string. It is absent from donor `vold`, so its absence is **not** evidence. A fixed build should emit `A115F_FSCRYPT_WRAPPER_*` markers instead.
 4. Run `getprop` for `ro.product.first_api_level`, `ro.crypto.state`, `ro.crypto.type`, `ro.crypto.volume.options`, and `init.svc.wait_for_keymaster`.
 5. Run `dmesg | grep -iE "linker|fscrypt|keymaster|qsee|dm-"` and preserve the full output.
 6. If ADB never appears, collect `/sys/fs/pstore/*`, `/proc/last_kmsg`, `/cache/recovery/last_log`, and `/cache/recovery/last_install` from Recovery.
@@ -242,17 +269,16 @@ Without items 1–6, installation must not be recommended, regardless of ZIP ava
 
 ### Highest-priority blocker
 
-The only raw `enablefilecrypto` failure log predates the Keymaster barrier. The current `f51460ef…` package contains the barrier and markers but has not been device-tested. The barrier is correctly placed, but it waits for Keystore2 registration, not for KM4; therefore barrier completion alone cannot prove that the FBE key path is healthy. In addition, the first `on init` KM4 start is expected to abort before `/vendor/firmware_mnt` is mounted, so the log must show whether the late-fs restart actually succeeds.
+The code-level root cause is established: the A11 4.9 kernel implements only legacy fscrypt, while donor `vold` and `init` have the legacy key path stripped. Even with a perfectly healthy KM4, the current `f51460ef…` asset cannot install a v1 key into the kernel or create the keyring that every process needs. The remaining unknowns are runtime: whether the prior build failed earlier in `retrieveOrGenerateKey()` (KM4/Keystore2), and whether the proposed wrapper/shim works under Samsung init and SELinux. No fixed build exists; readiness remains R0.
 
 ### Next concrete actions
 
-1. Device-test the exact `f51460ef…` asset with a verified stock restore path and explicit approval; capture the barrier, both `keymaster-4-0` starts, Keystore2, KM4, QSEECom, and FBE lines.
-2. Use the branch tree in `NEXT_DEVICE_TEST.md` to decide whether the failure is before the barrier, inside Keystore2/KM4 discovery, or inside KeyStorage/kernel FBE.
-3. Do not move the barrier into vendor `on post-fs-data`: system `installkey /data` would run before it. Do not add another Keymaster bridge before the log identifies the branch.
-4. Samsung ODE/UCM audit: **complete.** Donor vold consults `isUcmOdeMode()` only for `wrappedkey_v0`; A11 `/data` has no such flag, so ODE is not engaged. `vndservicemanager` is also confirmed present in the A11 vendor. Both branches are closed.
-5. Compatibility audit: **complete.** Kernel (4.9.227) has FS_ENCRYPTION/ICE/XTS/PFK; VINTF has no missing required framework HAL and no boot-blocking extra HAL; the boot image is stock A11; the installer does not touch `/data`; dynamic-partition geometry matches the donor images. No new blocker found.
-6. Keep readiness at R0; do not build or publish another ZIP until the root cause or a decisive device-log branch is established.
-6. Do not rebuild from `manus/a115f-build-once` or `manus/a115f-bootability-preflight`: both lack `scripts/patch_a115f_init.py`, so their ZIPs would not contain the barrier. If a rebuild is ever approved, start from `23f8998f…` or merge that patcher deliberately.
+1. Build the candidate fix on a branch from `23f8998f…`: PID-1 keyring wrapper, vold `LD_PRELOAD` shim, vold rc `setenv`, and an `init_exec` label for `/system/bin/init.real`. Do not publish a release.
+2. Review the wrapper and shim statically and compile them in CI; add host-side unit tests for the ioctl argument parsing if feasible.
+3. Device-test the fixed build only after the stock restore path is verified and the user approves; capture the wrapper markers, the ioctl failure strings, KM4/Keystore2 lines, and both `keymaster-4-0` starts.
+4. Keep readiness at R0; do not publish a new ZIP or recommend installation until at least one device boot reaches the framework.
+5. Do not rebuild from `manus/a115f-build-once` or `manus/a115f-bootability-preflight`: both lack `scripts/patch_a115f_init.py`. If a rebuild is approved, start from `23f8998f…` or merge that patcher deliberately.
+6. Do not move the barrier into vendor `on post-fs-data`: system `installkey /data` would run before it.
 
 ### What requires the user / physical device
 
@@ -515,7 +541,61 @@ The branch names are misleading: `build-once` is an ancestor, not a newer candid
 
 No build, flash, format, or new ZIP was produced in this session. Readiness remains **R0**.
 
-## 14. Change log
+## 14. Session checkpoint — 2026-11-16 (legacy-fscrypt root cause and fix design)
+
+### Root cause, in two parts
+
+The shipped combination cannot initialize `/data` file-based encryption:
+
+1. **Kernel/`vold` mismatch.** The A11 4.9.227 kernel implements only legacy fscrypt key management. It has no `FS_IOC_ADD_ENCRYPTION_KEY`, `FS_IOC_REMOVE_ENCRYPTION_KEY`, or `FS_IOC_GET_ENCRYPTION_KEY_STATUS`; v1 keys are installed with `add_key("logon", "ext4:<ref>"…)` and resolved with `request_key()`. Donor Samsung `vold` is ioctl-only: `installKey()` calls `0xC0506617`, `evictKey()` calls `0xC0406618`, and `waitForBusyFiles()` calls `0xC080661A` plus REMOVE. It imports neither `add_key` nor `keyctl`, and its recovered symbol table has no `installKeyLegacy`, `evictKeyLegacy`, `isFsKeyringSupported`, or `fscryptKeyring`. The ADD ioctl reaches the kernel and returns `ENOTTY`.
+
+2. **Missing keyrings.** Legacy fscrypt resolves keys through the session keyring of the process doing file I/O. Every process inherits PID 1's session keyring, and `installKeyLegacy()` expects a named `fscrypt` keyring inside it. Donor Samsung `init` never creates either: no keyctl strings or symbols, no `libkeyutils.so` DT_NEEDED, and no `svc` instruction in the full `SecondStageMain`. LineageOS 22.2/23.1 still create both, so this is a Samsung removal, not an Android 15 change. A helper cannot inject a session keyring into PID 1 because `keyctl_session_to_parent()` rejects `parent->pid <= 1`.
+
+Both parts must be fixed. Restoring only `vold`'s fallback would fail with `Unable to find device keyring`; restoring only the keyrings would leave `vold` using an ioctl the kernel does not implement.
+
+### Leading fix design
+
+**Part A — ramdisk `/init` wrapper (PID 1 keyring creation).**
+
+The stock A11 first-stage init loads SELinux policy and re-execs `/system/bin/init second_stage` as PID 1. The fix places a small static wrapper at the first-stage source path, which runs before the re-exec, creates the keyrings, then execs the real init. Because the wrapper executes in the kernel domain before policy load, no policy transition is needed for the keyring syscalls. `/system/bin/init` itself is left untouched.
+
+- Wrapper: `keyctl(KEYCTL_GET_KEYRING_ID, KEY_SPEC_SESSION_KEYRING, 1)` creates PID 1's anonymous session keyring; `keyctl(KEYCTL_SEARCH, KEY_SPEC_SESSION_KEYRING, "keyring", "fscrypt", 0)` finds the named `fscrypt` keyring; if absent, `add_key("keyring", "fscrypt", NULL, 0, KEY_SPEC_SESSION_KEYRING)` creates it. This mirrors AOSP `FscryptInstallKeyring()`. On failure, log a marker to `/dev/kmsg` and continue to exec anyway (a failed wrapper must not turn an FBE failure into a dead boot).
+- Exec target: the original first-stage init binary, moved to `/init.real` in the same ramdisk. It runs before policy load, so no file context is consulted and no `init_exec` label is required.
+- Markers: `A115F_FSCRYPT_WRAPPER_ENTER`, `A115F_FSCRYPT_WRAPPER_SESSION_OK <serial>`, `_SESSION_FAIL <errno>`, `_FSCRYPT_OK <serial>`, `_FSCRYPT_FAIL <errno>`, `A115F_FSCRYPT_WRAPPER_EXEC /init.real`, `_EXEC_FAIL <errno>`.
+- Why not replace `/system/bin/init`: `/system/bin/ueventd` is a build symlink to `init`, and `service ueventd … seclabel u:r:ueventd:s0` starts it through that path. Replacing the binary would make ueventd run in the wrong domain or re-exec the wrapper from `ueventd`/`watchdogd`, which SELinux may deny.
+- Why not a service: `keyctl_session_to_parent()` explicitly rejects PID 1, and the keyring must be PID 1's. Booting a helper first and `exec`ing init does not preserve the session keyring.
+
+**Part B — 64-bit `vold` `LD_PRELOAD` shim (legacy key translation).**
+
+The shim intercepts `ioctl()` and calls the real `ioctl` first. It emulates only on `ENOTTY`:
+
+- `FS_IOC_ADD_ENCRYPTION_KEY` (`0xC0506617`): if the argument is `NULL`, return `-1` with `ENOTTY`. This is the shape of AOSP's legacy-support probe, but donor `vold` contains no probe and calls ADD only with a real argument, so this branch is defensive. Otherwise require `key_spec.type == 1`, `raw_size == 64`, `key_id == 0`, and `__flags == 0`; build the 72-byte `fscrypt_key` (`mode=0`, `raw[64]`, `size=64`) and install three logon keys named `ext4:<16 hex>`, `f2fs:<16 hex>`, and `fscrypt:<16 hex>` into the `fscrypt` keyring found by searching PID 1's session keyring. Type 2 (`IDENTIFIER`), `HW_WRAPPED`, and any other raw size are rejected with `EOPNOTSUPP`/`EINVAL`; the A11 kernel has no identifier/v2 key support.
+- `FS_IOC_REMOVE_ENCRYPTION_KEY` (`0xC0406618`): search and unlink the three legacy keys. Matching AOSP `evictKeyLegacy`, this is **not** idempotent: if any of the three names is missing, set `removal_status_flags=0` and return `-1` with `ENOKEY`; return 0 only when all three were found and unlinked.
+- `FS_IOC_GET_ENCRYPTION_KEY_STATUS` (`0xC080661A`): search the three names and report `FSCRYPT_KEY_STATUS_PRESENT` (with `status_flags=ADDED_BY_SELF`, `user_count=1`) if any exist, `ABSENT` otherwise; `INCOMPLETELY_REMOVED` is not meaningful for legacy keys.
+- Log one marker per distinct result: `A115F_FSCRYPT_SHIM_LOADED`, `_ADD_PROBE_ENOTTY`, `_ADD_OK <name>`, `_ADD_FAIL <errno>`, `_REMOVE_OK`, `_REMOVE_FAIL <errno>`, `_STATUS_PRESENT`, `_STATUS_ABSENT`, `_UNEXPECTED <request>`.
+
+`LD_PRELOAD` requires the donor `vold.rc` to `setenv LD_PRELOAD /system/lib64/liba115f_fscrypt_shim.so`. The shim is 64-bit because donor `vold` is ELF64. It calls the real `ioctl` through a raw `SYS_ioctl` syscall (29) and calls `add_key`/`keyctl` through raw syscalls (217/219), so it needs neither `libdl` nor `libkeyutils`. Interposition is viable because donor `vold` imports `ioctl` and both failure sites call its normal PLT stub; `.rela.plt` slot `0x146F30` is an `R_AARCH64_JUMP_SLOT` for symbol index 105, `ioctl`.
+
+### SELinux
+
+No policy change is required for the intended path. The A11 `plat_sepolicy.cil` already contains `(allow domain init (key (search)))`, `(allow domain vold (key (search)))`, `(allow domain kernel (key (search)))`, `(allow init init (key (write search setattr)))`, `(allow vold init (key (write search setattr)))`, and `(allow vold vold (key (write search setattr)))`. The versioned policy repeats the key rules with `_31_0` suffixes, and A11 `vendor_sepolicy.cil` adds `(allow vold_31_0 kernel_31_0 (key (write search)))`, `(allow domain kernel_31_0 (key (search)))`, and `(allow init_31_0 kernel_31_0 (key (search)))`. The wrapper's keyrings are labeled `kernel` because they are created before policy load; `vold` installs and searches keys through its write/search rights on `kernel` (fallback: `vold`'s own keyring if the shim creates it).
+
+Residual policy risks: `/init.real` is exec'd before policy load, so it does not need `init_exec` and no rootfs file context is consulted. If the wrapper ran after policy load instead of before it, key creation in the `init` domain would need `create`, which the current rules do not grant; the design deliberately avoids that. The remaining runtime risks are a keyring label mismatch and an AVC denial on mapping the shim.
+
+### Build integration points
+
+- Wrapper source and `init.real` relocation must be applied to the boot-image ramdisk, not `/system`. There is **no existing boot repack step**: `scripts/internal/create_work_dir.sh` copies the stock A11 `boot.img` into `$WORK_DIR/kernel`, and `scripts/internal/build_flashable_zip.sh` copies `$WORK_DIR/kernel/*.img` unchanged into the ZIP. `unica/mods/zz_a115f_boot_fit/customize.sh` is only an optional-app trim and does not modify any boot image. A new mod must therefore unpack, patch, and repack `$WORK_DIR/kernel/boot.img` after `create_work_dir.sh` and before `build_flashable_zip.sh`, and must fail the build if the expected ramdisk layout is absent. The wrapper must be compiled for arm64 and statically linked, because no dynamic linker exists at that point.
+- Shim source, the `vold.rc` `setenv`, and shim metadata belong to the **system** image patch set: `$WORK_DIR/system/system/lib64/liba115f_fscrypt_shim.so`, `SET_METADATA "system" "system/lib64/liba115f_fscrypt_shim.so" 0 0 0644 "u:object_r:system_lib_file:s0"`, and `$WORK_DIR/system/system/etc/init/vold.rc`. The shim must not link `libdl` or `libkeyutils`; it needs only bionic's `__errno` and raw syscalls.
+- Add the build steps to the existing GitHub Actions workflow without publishing. Do not modify `publish-public.yml`.
+- Add host tests for the ioctl decoder: v1 descriptor extraction, 72-byte payload layout, name formatting, probe (`arg==NULL`), and ENOTTY-only fallback.
+
+### Not yet done
+
+The wrapper and shim are designed but not written, compiled, packaged, or device-tested. The exact A11 ramdisk `/init` layout (binary vs symlink, compression, header version) is still to be confirmed against the stock boot image; the design deliberately fails the build if `/init` is absent. `LD_PRELOAD` support in Samsung `vold`, the shim ABI, kernel keyring inheritance, and runtime SELinux behavior remain untested assumptions (H10). The file-context question is closed: `/init.real` is exec'd before policy load, so no label is consulted. Readiness stays **R0**.
+
+The detailed ABI, structs, syscall numbers, packaging, and risk list are in `FIX_LEGACY_FSCRYPT.md`. The Phase 1–5 gates, persistent task queue, and program-level risks are in `DEVELOPMENT_PLAN.md`.
+
+## 15. Change log
 
 - 2026-10-28: Initial status created from repository, release metadata, and static package metadata. No build or device test performed.
 - 2026-10-28: Corrected the source-access claim (repo is public), added the current release asset hash and the stale `BOOT_PROGRESS.md` hash discrepancy, confirmed the donor’s 32-bit support and the helper’s ELF32 dependencies, recorded the FBE v1/v2 decision path, demoted `K00R` and QSEE `0x72000206`, and identified the stock `/oem` mount and Samsung ODE partitions as separate open items. No build or device test performed.
@@ -523,3 +603,5 @@ No build, flash, format, or new ZIP was produced in this session. Readiness rema
 - 2026-10-29: Added the pre-disconnect checkpoint with the exact blocker, all session changes, build results, `/data` FBE evidence, resume offsets/hashes, and next commands; published the status repo. Still R0; no build or device test performed.
 - 2026-11-03: Retracted the init import-order/deadlock theory after reading AOSP `ImportParser::EndFile()`; confirmed the barrier is correctly placed after system `class_start early_hal` and before vendor `mount_all --late`; recorded the barrier build timeline (`1103fc00…` pre-barrier, `190586c…` barrier, `23f8998f…` markers, current `f51460ef…`); confirmed FBE v1, the 64-bit KM4 compat libraries, merged system_ext, VINTF non-blocking, and the A11 vendor `vndservicemanager`; documented that `wait_for_keymaster` gates on Keystore2 registration, not KM4, and added the decisive device-log branch tree. Still R0; no build or device test performed.
 - 2026-11-04: Decoded the A11 `KeymasterUtils` constructor (`QSEECom_start_app(…, "/vendor/firmware_mnt/image", "keymaster64", …)` with a `"keymaster"` retry and a `QSEECom_start_app failed` abort); established that the first `on init` KM4 start necessarily precedes the `apnhlos` mount at `on fs` and is expected to abort; confirmed AOSP `Service::Start()` clears `SVC_RESTARTING`, so the system `on late-fs` `class_start early_hal` can start a fresh KM4; confirmed the `restart_period` default of 5 s and that Android 15’s 4-crash limit does not apply; documented the `vendor.qseecomd` listener gate and `qseecom-service` registration; confirmed the KM4 rc has no `interface` declaration and therefore no lazy-start fallback; closed the Samsung ODE/UCM branch from donor `vold` disassembly (`isUcmOdeMode()` is consulted only for `wrappedkey_v0`, which A11 `/data` does not use); completed the donor `/system/lib64` listing and confirmed the full 64-bit KM4 HIDL stack; reconciled the source branches via the GitHub compare API (`23f8998f…` is 13 commits ahead of `build-once`, which is a strict ancestor; `preflight` is 2 commits ahead and 15 behind, adding stock-blob extraction and the upload-visibility guard); completed the kernel/VINTF/boot-image/installer compatibility audit (kernel 4.9.227 has FS_ENCRYPTION/ICE/XTS/PFK; no missing required framework HAL; stock A11 boot image; installer does not touch `/data`; geometry matches donor images). No build, flash, format, or new ZIP was produced. Still R0; no device test performed.
+- 2026-11-16: Established the code-level root cause in two parts: the A11 4.9.227 kernel implements only legacy fscrypt (0 ADD_KEY ioctl sites; `request_key`-based v1 keys), while donor Samsung `vold` is ioctl-only and lacks every legacy fallback symbol, and donor Samsung `init` creates neither the session keyring nor the `fscrypt` keyring (no keyctl symbols, no `libkeyutils` dependency, no `svc` in `SecondStageMain`). Confirmed LineageOS 22.2/23.1 still contain the fallback, so the earlier “Android 15 removed it” claim is corrected: Samsung removed it. Confirmed SELinux already permits the intended keyring operations and that `/system/bin/ueventd` is a symlink to `init`, which rules out replacing `/system/bin/init` as the leading fix. Recorded the leading design: a pre-policy ramdisk `/init` wrapper creates both keyrings in the kernel domain and execs the real init; a 64-bit `vold` `LD_PRELOAD` shim translates ADD/REMOVE/GET_STATUS to legacy `add_key`/`keyctl` only on `ENOTTY`. Added `FIX_LEGACY_FSCRYPT.md` with the ABI and packaging design. No build, flash, format, or new ZIP was produced. Still R0; no device test performed.
+- 2026-11-16 (correction): Verified the remaining design assumptions. `.rela.plt` slot `0x146F30` is an `R_AARCH64_JUMP_SLOT` for symbol index 105 = `ioctl`, so `LD_PRELOAD` interposition is viable without `libdl`. Kernel 4.9 possession permissions are additive and propagate through nested keyring search, so no `KEYCTL_SETPERM` and no `KEY_OTH_SEARCH` are needed; the default keyring mask includes `KEY_POS_WRITE`. The `fscrypt` keyring is created by AOSP `FscryptInstallKeyring()` (search-first, then `add_key("keyring", "fscrypt")`), not by `SecondStageMain`; donor init retains neither. Corrected the status text: donor `vold` has no probe (the `NULL` ADD branch is defensive only), legacy REMOVE is not idempotent (missing key returns `ENOKEY`), the real `ioctl` is reached by raw `SYS_ioctl` rather than `dlsym`, `/init.real` needs no `init_exec` because it is exec'd before policy load, and the shim/`vold.rc`/metadata belong to the system image. `plat_sepolicy.cil` is A11 target policy (API 31, from `system_big3.dat`), not donor policy. Added `DEVELOPMENT_PLAN.md` with Phase 1–5 gates and the persistent task queue. No build, flash, format, or new ZIP was produced. Still R0; no device test performed.
