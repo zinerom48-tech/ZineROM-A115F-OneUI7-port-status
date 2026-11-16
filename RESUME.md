@@ -16,7 +16,7 @@ GitHub forks do **not** copy release assets; the 1.84 GB ZIP remains only at the
 
 ## 1. Is it safe to disconnect?
 
-**Yes.** No build, flash, format, or device operation is running. The legacy-fscrypt source is committed and pushed (`manus/a115f-legacy-fscrypt@3aa20d4`), both binaries were compiled and host-tested locally and in CI, and the branch’s 81-test suite passes in CI, including the compile, ELF, in-ROM mod-install, and real `apply_modules.sh` driver checks. The policy inputs were also audited statically: the donor plat policy, donor 31.0 mapping, A11 vendor policy, and donor system_ext policy grant (or do not remove) every key permission the fix needs. The remaining limitation is external: the build job stops before `make_rom.sh` because `.github/workflows/build.yml` installs a nonexistent versioned kernel package (`linux-modules-extra-7.0.0-1014-aws`, then `linux-modules-extra-7.0.0-1017-azure`), and the current token lacks the `workflow` scope to fix it (see §4). Do not delete the audit files listed in section 6 or the source files.
+**Yes.** No build, flash, format, or device operation is running. The legacy-fscrypt source is committed and pushed (`manus/a115f-legacy-fscrypt@3aa20d4`), both binaries were compiled and host-tested locally and in CI, and the branch’s 81-test suite passes in CI, including the compile, ELF, in-ROM mod-install, and real `apply_modules.sh` driver checks. The policy inputs were also audited statically: the donor plat policy, donor 31.0 mapping, A11 vendor policy, and donor system_ext policy grant (or do not remove) every key permission the fix needs. The remaining limitation is external: the build job stops before `make_rom.sh` because `.github/workflows/build.yml` installs a nonexistent versioned kernel package (`linux-modules-extra-7.0.0-1014-aws`, then `linux-modules-extra-7.0.0-1017-azure`) and its apt list omits the `bc` build dependency, and the current token lacks the `workflow` scope to fix either (see §4). Do not delete the audit files listed in section 6 or the source files.
 
 ## 2. Exact current blocker
 
@@ -81,6 +81,7 @@ There is **no successful boot**, no boot animation, and no Setup Wizard. The fix
 - `/system/bin/ueventd` is a build symlink to `init` (`symlinks: ["ueventd"]` in `init/Android.bp`), and `service ueventd … seclabel u:r:ueventd:s0`. A `/system/bin/init` wrapper must preserve `argv[0]` and skip keyring setup for ueventd; the mod verifies the symlink target before installing it.
 - Full donor system image reconstructed: `system_full.dat`, exactly `3,213,774,848` bytes.
 - Full donor product stream reconstructed: `product_final.dat`, exactly `312,815,616` bytes.
+- Both firmware pins are the current latest on Samsung FUS, verified 2026-11-16 with the pinned samloader-rs 2.2.0 client (asset SHA-256 `0132de1b…`): `SM-A115F/MWD` returns `A115FXXS6CWK2/A115FOJM6CWK1/A115FXXS6CWK1/A115FXXS6CWK2` and `SM-A057F/TUR` returns `A057FXXUFDZH2/A057FOJMFDZH2/A057FXXUFDZH2/A057FXXUFDZH2`. The build downloads directly from FUS, so it is not blocked by the 404 upstream asset.
 - Compatibility audit: no additional kernel, VINTF, boot-image, or installer defect beyond the FBE root cause. The installer does not touch `/data`; dynamic-partition geometry matches the donor images.
 
 ## 4. Build results
@@ -97,12 +98,12 @@ There is **no successful boot**, no boot animation, and no Setup Wizard. The fix
 - CI run `43921516470` on `74c8198` passed `Ran 80 tests in 6.808s`, `OK`, including the four new mod-install tests (compile, donor init move, wrapper/shim install, ueventd symlink, exactly-once metadata, one `LD_PRELOAD`, idempotence, fail-closed). The mod now uses coreutils `od` instead of `xxd`. Step 8 still failed on `linux-modules-extra-7.0.0-1017-azure`.
 - CI run `43925890423` on `3aa20d4` passed `Ran 81 tests in 17.249s`, `OK`, including a fifth mod-install test that invokes the real `scripts/internal/apply_modules.sh` driver with a copied mod and a sentinel system tree, proving the mod runs and `SKIPUNZIP=1` suppresses the automatic tree copy. Step 8 still failed on `linux-modules-extra-7.0.0-1017-azure`.
 - The mod's own install/metadata/`vold.rc` stages and the driver-originated invocation are now covered by `tests/test_legacy_fscrypt_mod_install.py`; the surrounding `make_rom.sh` flow remains unexercised.
-- The minimal fix is to remove that package from the apt install list. It needs a `workflow`-scoped credential or a user edit; the current token scopes are `gist, read:org, repo`.
+- The minimal fix is one line in the apt install list: remove `linux-modules-extra-$(uname -r)` and add `bc`. `bc` is required at source time by `scripts/utils/build_utils.sh` (`make_rom.sh:20`), is used at `build_utils.sh:39`/`:61`, and is not in the Ubuntu 24.04 image manifest or any listed package's dependency closure. It needs a `workflow`-scoped credential or a user edit; the current token scopes are `gist, read:org, repo`.
 - Do not build or publish another ZIP until CI is running and the ROM build is inspected. A candidate ROM build must start from `manus/a115f-legacy-fscrypt`, must not run `publish-public.yml`, and must stay R0 until a device reaches the framework.
 
 ## 5. What the fix needs, in order
 
-1. **Fix the CI workflow package line (next; user action).** Remove `linux-modules-extra-$(uname -r)` from the `apt install` list in `.github/workflows/build.yml`; the runner resolves it to a nonexistent versioned package whose name changes with the pool (`7.0.0-1014-aws`, then `7.0.0-1017-azure`). This needs a `workflow`-scoped credential or a user edit. Do not shadow `uname`/`sudo`, add a dummy package, pin a kernel package, or disable the step.
+1. **Fix the CI workflow package line (next; user action).** In `.github/workflows/build.yml`, remove `linux-modules-extra-$(uname -r)` from the `apt install` list and add `bc`. The runner resolves the kernel package to a nonexistent versioned name that changes with the pool (`7.0.0-1014-aws`, then `7.0.0-1017-azure`); `bc` is required by `build_utils.sh` and is absent from the runner image manifest. This needs a `workflow`-scoped credential or a user edit. Do not shadow `uname`/`sudo`, add a dummy package, pin a kernel package, or disable the step.
 2. **Re-dispatch `build.yml` on `manus/a115f-legacy-fscrypt`.** The 81-test suite and the target compile/`readelf`/mod-install/`apply_modules.sh` checks already pass; watch the `Set up build environment` step, then the full `make_rom.sh` flow. Fix any new failure before building.
 3. **Record the result.** The ROM build must produce and inspect a ZIP; record the ZIP SHA-256 and the SHA-256 of `/system/bin/init`, `/system/bin/init.real`, and the shim. Do not publish.
 4. **Review the built image statically.** Confirm `system/bin/init` is the wrapper, `init.real` is the donor init, `ueventd` still resolves to `init`, `vold.rc` has exactly one `setenv LD_PRELOAD`, and the shim is present in `/system/lib64` with the expected label.
@@ -170,7 +171,7 @@ The old stalled partial clone at `C:\Users\claymi5433\ZineROM-a11q-src` is not t
 
 ## 7. Next offline work
 
-1. **Fix the CI workflow package line (next; user action):** remove `linux-modules-extra-$(uname -r)` from the `apt install` list in `.github/workflows/build.yml`; the runner resolves it to the nonexistent `linux-modules-extra-7.0.0-1014-aws`. This needs a `workflow`-scoped credential or a user edit. Do not rewrite the default branch or work around the package.
+1. **Fix the CI workflow package line (next; user action):** in `.github/workflows/build.yml`, remove `linux-modules-extra-$(uname -r)` and add `bc` to the `apt install` list; the runner resolves the kernel package to the nonexistent `linux-modules-extra-7.0.0-1014-aws`/`-1017-azure`, and `bc` is a hard `build_utils.sh` dependency missing from the runner image. This needs a `workflow`-scoped credential or a user edit. Do not rewrite the default branch or work around the packages.
 2. **Re-dispatch the ROM build:** run `build.yml` on `manus/a115f-legacy-fscrypt`; the 76-test suite and target compile/`readelf` checks already pass, so watch the `Set up build environment` step, then the mod’s in-ROM compile/install. Fix any new failure before producing a ZIP.
 3. **Review the built system image statically** before any device test; record all hashes and logs.
 4. **Keep the status docs current** in `PORTING_STATUS.md`, `ISSUE_REGISTER.md`, `NEXT_DEVICE_TEST.md`, and `FIX_LEGACY_FSCRYPT.md`.
@@ -282,7 +283,7 @@ Branch tree for the current asset:
 - [x] Added the in-ROM mod-install test and the `od` fallback; run `43921516470` passed 80/80 tests with no skips.
 - [x] Added the real `apply_modules.sh` driver test; run `43925890423` passed 81/81 tests with no skips.
 - [x] Policy-input audit closed statically (ISSUE-029): donor `plat_sepolicy.cil`, donor `mapping/31.0.cil`, A11 `vendor_sepolicy.cil`, and donor `system_ext_sepolicy.cil` checked; the assembled policy is still unbuilt.
-- [ ] Fix ISSUE-028 (remove `linux-modules-extra-$(uname -r)` from the workflow); re-dispatch `build.yml` and record the build outcome.
+- [ ] Fix ISSUE-028 (remove `linux-modules-extra-$(uname -r)` and add `bc` in the workflow); re-dispatch `build.yml` and record the build outcome.
 - [ ] Build only after CI is green, then inspect the built image before any device test.
 - [ ] If the phone is available, run the one device test in section 8 after verifying the recovery path and getting explicit approval; capture both `keymaster-4-0` starts, the vold fscrypt line, and the wrapper/shim markers.
 - [ ] Use the branch tree to pick exactly one next branch.

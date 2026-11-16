@@ -52,14 +52,14 @@ The original M0-M9 milestones map to the five phases:
 
 ## 2. Current baseline (2026-11-16)
 
-- Source: `zinerom48-tech/ZineROM-a11q`. The barrier baseline is `manus/a115f-vendor-fingerprint` at `23f8998f0200969f5748e9eb012d1dc52037a054`; the legacy-fscrypt work is on `manus/a115f-legacy-fscrypt` at `48438e6` (12 added files, pushed). Upstream `nova-arch008/ZineROM-a11q` returns 404; the fork is public.
-- Status repo: `zinerom48-tech/ZineROM-A115F-OneUI7-port-status`, branch `audit/2026-11-03-keymaster-barrier` at `3fb26b8` (plus the current doc checkpoint). `main` remains at `1d2d0ad` and must stay untouched.
+- Source: `zinerom48-tech/ZineROM-a11q`. The barrier baseline is `manus/a115f-vendor-fingerprint` at `23f8998f0200969f5748e9eb012d1dc52037a054`; the legacy-fscrypt work is on `manus/a115f-legacy-fscrypt` at `3aa20d4` (14 added files, pushed). Upstream `nova-arch008/ZineROM-a11q` returns 404; the fork is public.
+- Status repo: `zinerom48-tech/ZineROM-A115F-OneUI7-port-status`, branch `audit/2026-11-03-keymaster-barrier` (head advances with each audit commit; `55e8cdb` before the current doc checkpoint). `main` must stay untouched.
 - Current public asset: `f51460eff376466d24c12d39902e954e6037e5de22b3a7aef68088346f26fa95` (1,842,649,818 bytes), statically validated with 62 tests, **not boot-tested**.
 - Code-level root cause: **two-part legacy-fscrypt gap**.
   1. A11 4.9.227 kernel has no modern fscrypt key ioctls; donor `vold` is ioctl-only and has no legacy fallback.
   2. Donor `init` creates neither PID 1's session keyring nor the named `fscrypt` keyring.
 - Leading fix: `/system/bin/init` wrapper (pre-policy keyring creation, `argv[0]` preserved, donor init moved to `init.real`) plus a 64-bit vold `LD_PRELOAD` ioctl shim. Source compiled locally with Zig 0.17.1/clang 22.1.8, host-tested, and pushed; ROM build and device test pending. Design in `FIX_LEGACY_FSCRYPT.md`.
-- Source branch `manus/a115f-legacy-fscrypt@48438e6` adds 12 files and is pushed. The standalone CI workflow is local-only (`local/a115f-legacy-fscrypt-ci-workflow@5551184`) because the credential lacks `workflow` scope. The repository currently has zero registered Actions workflows, so `build.yml` cannot be dispatched (ISSUE-027).
+- Source branch `manus/a115f-legacy-fscrypt@3aa20d4` adds 14 files and is pushed. The standalone CI workflow is local-only (`local/a115f-legacy-fscrypt-ci-workflow@5551184`) because the credential lacks `workflow` scope. Repository workflows are registered (ISSUE-027 closed); `build.yml` has been dispatched four times, and the 81-test suite passes. The build stops at `Set up build environment` because the apt list contains a nonexistent versioned kernel package and omits `bc` (ISSUE-028).
 - Local binaries: wrapper 2624-byte `ET_EXEC`, no `PT_INTERP`/`.dynamic`/`DT_NEEDED`; shim 6280-byte `ET_DYN`, 0 `DT_NEEDED`, imports only `__android_log_print`/`__errno`, exports `ioctl`; host tests pass.
 - No physical A11, no raw log linked to the exact ZIP SHA, no verified stock restore package, unknown bootloader/AVB state, no local Android toolchain. These block device and build work.
 - Readiness: **R0**.
@@ -71,8 +71,8 @@ The original M0-M9 milestones map to the five phases:
 | Phase | Objective | Exit gate | Current status |
 |---|---|---|---|
 | **1. Repository and hardware audit** | Establish what is known, what is assumed, and what needs a device | G1 | Complete for offline evidence; device items blocked |
-| **2. Port development** | Fix boot-critical gaps, then bring up hardware in dependency order | G2 | In progress: legacy-fscrypt source implemented; compile/ROM build next |
-| **3. Automated QA** | Make every build and static claim reproducible and testable | G3 | Partial: prior 62 static tests; new host/CI tests queued |
+| **2. Port development** | Fix boot-critical gaps, then bring up hardware in dependency order | G2 | In progress: legacy-fscrypt source implemented and CI-tested; ROM build blocked by ISSUE-028 |
+| **3. Automated QA** | Make every build and static claim reproducible and testable | G3 | Partial: 81-test CI suite green; image/ZIP checks pending the blocked build |
 | **4. Bug investigation** | Convert device failures into minimal, evidence-backed fixes | G4 | Blocked on device |
 | **5. Build, delivery, report** | Produce a candidate, verify recovery, publish only with approval, report honestly | G5 | Blocked on build/device/approval |
 
@@ -130,8 +130,8 @@ Do not spend time on optional apps, theming, or feature parity while step 1 or 2
 |---|---|---|---|---|---|
 | P2.1 | Legacy-fscrypt fix design (wrapper + shim + system-image mod) | S1 | **Done (design)** | P1.3/P1.4 | Design reflected in `FIX_LEGACY_FSCRYPT.md`. |
 | P2.2 | Implement `init_wrapper.c`, shim, syscall helpers, mod, CI compile | S1 | **Done (source, pushed)** | P2.1 | 12 files pushed at `48438e6`; the standalone CI workflow is local-only. |
-| P2.3 | Add host unit tests and static binary checks | S1 | **Done locally; CI blocked** | P2.2 | Host tests pass and `readelf` checks pass with Zig 0.17.1; run in `build.yml` once Actions registration is fixed. |
-| P2.4 | Build a candidate on the new branch; record hash; do not publish | S1 | **Blocked (CI registration)** | P2.2/P2.3 | Unblock ISSUE-027, dispatch `build.yml`, capture build log and artifact SHA. |
+| P2.3 | Add host unit tests and static binary checks | S1 | **Done (local + CI)** | P2.2 | Host tests pass; `readelf` checks pass locally and in CI run `43925890423`. |
+| P2.4 | Build a candidate on the new branch; record hash; do not publish | S1 | **Blocked (ISSUE-028)** | P2.2/P2.3 | Fix the workflow apt line (remove `linux-modules-extra-$(uname -r)`, add `bc`), dispatch `build.yml`, capture build log and artifact SHA. |
 | P2.5 | Preflight-verify donor `system/bin/init` and `ueventd` layout | S1 | **Implemented in mod; ROM build pending** | P2.2 | Fail closed if `init` is not a regular ELF64 or `ueventd` does not resolve to `init`. |
 | P2.6 | Device boot to framework/lockscreen (M5/M6) | S1 | **Blocked** | P2.4, P2.5, device, approval | Capture one SHA-linked log. |
 | P2.7 | Verify `/data` FBE across reboot; Setup Wizard (M7) | S1 | **Blocked** | P2.6 | Test fresh and existing `/data` separately. |
@@ -168,9 +168,9 @@ Do not spend time on optional apps, theming, or feature parity while step 1 or 2
 
 | ID | Task | Status | Notes |
 |---|---|---|---|
-| QA1 | Static validators (ZIP, fingerprint, boot chain, vendor ABI, partition layout) | **Partial** | Existing 62 tests; not re-run this session. |
+| QA1 | Static validators (ZIP, fingerprint, boot chain, vendor ABI, partition layout) | **Running in CI** | The existing static validators run in the same 81-test suite; run `43925890423` passed with no skips. |
 | QA2 | Host unit tests for the ioctl decoder and wrapper keyring logic | **Implemented; host tests pass** | `tests/test_legacy.c`; see `FIX_LEGACY_FSCRYPT.md` §8.1. |
-| QA3 | CI compile step for wrapper/shim with AArch64 static/shared checks | **Implemented; CI blocked** | The standalone workflow is local-only; the same checks run in `zz_a115f_legacy_fscrypt/customize.sh`. Do not touch `publish-public.yml`. |
+| QA3 | CI compile step for wrapper/shim with AArch64 static/shared checks | **Implemented; CI green** | `tests/test_legacy_fscrypt_build.py` compiles both targets with clang 18 and verifies the ELF/symbol contract; the mod repeats the checks at ROM-build time. Do not touch `publish-public.yml`. |
 | QA4 | System-image checks: `system/bin/init` is the wrapper, `init.real` is the donor init, `ueventd` resolves to `init`, `vold.rc` has `setenv`, shim present and labelled | **Implemented in mod; ROM build pending** | Fail the build if any check fails. |
 | QA5 | Device log parser for `A115F_FSCRYPT_*`, `Failed to install fscrypt key`, AVC denials | **Queued** | Produce a pass/fail/branch summary. |
 | QA6 | Regression matrix for FBE fresh/existing `/data`, reboot, and recovery | **Queued** | Blocked on device for execution. |
@@ -207,7 +207,7 @@ For every device failure:
 | ID | Task | Status | Notes |
 |---|---|---|---|
 | P4.1 | Device log intake template and branch tree | **Done** | `NEXT_DEVICE_TEST.md`. |
-| P4.2 | Issue register maintenance | **Ongoing** | ISSUE-001…025. |
+| P4.2 | Issue register maintenance | **Ongoing** | ISSUE-001…029. |
 | P4.3 | Triage the first SHA-linked FBE log | **Blocked** | Needs device + approved flash. |
 | P4.4 | Fix display/touch/audio/RIL/Wi-Fi/BT/camera/sensors/power defects | **Blocked** | Needs P2.6. |
 | P4.5 | Stability/regression soak (M9) | **Blocked** | Define target with user; no claim without evidence. |
@@ -340,3 +340,4 @@ For every device failure:
 - 2026-11-16 (design change): Wrapper moved from the boot ramdisk `/init` to `/system/bin/init`; donor init becomes `/system/bin/init.real`, both labelled `init_exec`. `argv[0]` is preserved for the `ueventd` symlink. Boot image and `magiskboot` are no longer part of this fix. Source and CI workflow exist; compile, ROM build, and device test are still pending. R0.
 - 2026-11-16 (local build): Compiled the wrapper and shim with Zig 0.17.1/clang 22.1.8 + lld using the project flags, no warnings. Wrapper `ET_EXEC`, 2624 bytes, entry `0x1010848`, no `PT_INTERP`/`.dynamic`, 0 `DT_NEEDED`; shim `ET_DYN`, 6280 bytes, 0 `DT_NEEDED`, imports exactly `__android_log_print __errno`, exports `ioctl`, no memory exports. Host tests initially crashed with `0xC0000005` because `a115f_keyctl_fn` used 32-bit `unsigned long` on Windows LLP64; switching to `uintptr_t` fixed the host tests and left the aarch64 binaries byte-identical. Commits `325dcd2` (12 files) and `48438e6` (ABI fix) pushed. R0; no ROM build or device test.
 - 2026-11-16 (CI blocker): `build.yml` dispatch returns HTTP 404 and the repository lists zero workflows, although the default branch `oneui7-a11q-boot` contains `build.yml`, Actions is enabled, and the token has `repo` scope. Requires user action to register workflows or a `workflow`-scoped credential (ISSUE-027). Do not rewrite the default branch. R0.
+- 2026-11-16 (FUS/workflow preflight): Verified both pinned firmware tuples are the current latest on Samsung FUS with samloader-rs 2.2.0 (`SM-A115F/MWD` = `A115FXXS6CWK2/A115FOJM6CWK1/A115FXXS6CWK1/A115FXXS6CWK2`; `SM-A057F/TUR` = `A057FXXUFDZH2/A057FOJMFDZH2/A057FXXUFDZH2/A057FXXUFDZH2`), so the build's FUS download path is not blocked by unavailable firmware. Found a second workflow apt defect: `make_rom.sh` sources `build_utils.sh`, which requires `bc` at source time, but neither the workflow list nor the Ubuntu 24.04 image manifest provides it. ISSUE-028 now requires removing `linux-modules-extra-$(uname -r)` and adding `bc` in the same edit; added failed approach 21. Updated the phase/task status to the 81-test CI checkpoint. R0; no build, flash, or `/data` operation.
